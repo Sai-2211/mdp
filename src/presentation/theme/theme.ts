@@ -1,14 +1,19 @@
 export const theme = {
   colors: {
-    bg: '#0B1020',
-    card: '#141B2D',
-    card2: '#0F1628',
-    text: '#E8EEF9',
-    muted: '#A8B1C7',
-    primary: '#4F8DF6',
-    danger: '#FF6B6B',
-    success: '#2DD4BF',
-    border: '#25304C',
+    // Rapido-inspired (yellow + clean light surfaces)
+    bg: '#FAFAFA',
+    card: '#FFFFFF',
+    card2: '#F3F4F6',
+    text: '#0B1220',
+    muted: '#5B657A',
+    primary: '#F9C800',
+    onPrimary: '#0B1220',
+    dark: '#111827',
+    onDark: '#FFFFFF',
+    danger: '#E11D48',
+    onDanger: '#FFFFFF',
+    success: '#10B981',
+    border: '#E5E7EB',
     warning: '#F59E0B',
   },
   spacing: {
@@ -24,4 +29,3 @@ export const theme = {
     lg: 18,
   },
 } as const;
-

@@ -15,7 +15,7 @@ export function AppTabs() {
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerShown: false,
-        tabBarStyle: { backgroundColor: theme.colors.card2, borderTopColor: theme.colors.border },
+        tabBarStyle: { backgroundColor: theme.colors.card, borderTopColor: theme.colors.border },
         tabBarActiveTintColor: theme.colors.primary,
         tabBarInactiveTintColor: theme.colors.muted,
         tabBarIcon: ({ color, size }) => {
@@ -31,4 +31,3 @@ export function AppTabs() {
     </Tab.Navigator>
   );
 }
-

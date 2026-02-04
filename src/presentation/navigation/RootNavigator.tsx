@@ -1,5 +1,5 @@
 import React from 'react';
-import { DarkTheme, NavigationContainer } from '@react-navigation/native';
+import { DefaultTheme, NavigationContainer } from '@react-navigation/native';
 
 import { useAuth } from '../state/AuthContext';
 import { AuthStack } from './AuthStack';
@@ -8,9 +8,9 @@ import { SplashScreen } from '../screens/SplashScreen';
 import { theme } from '../theme/theme';
 
 const navTheme = {
-  ...DarkTheme,
+  ...DefaultTheme,
   colors: {
-    ...DarkTheme.colors,
+    ...DefaultTheme.colors,
     background: theme.colors.bg,
     card: theme.colors.bg,
     text: theme.colors.text,
@@ -32,4 +32,3 @@ export function RootNavigator() {
     </NavigationContainer>
   );
 }
-

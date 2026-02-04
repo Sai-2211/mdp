@@ -5,7 +5,6 @@ export type AuthStackParamList = {
 
 export type DashboardStackParamList = {
   Dashboard: undefined;
-  LiveCharging: undefined;
 };
 
 export type HistoryStackParamList = {
@@ -18,4 +17,3 @@ export type AppTabParamList = {
   HistoryTab: undefined;
   Profile: undefined;
 };
-

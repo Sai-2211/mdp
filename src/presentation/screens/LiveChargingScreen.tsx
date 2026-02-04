@@ -21,7 +21,7 @@ function connectionTone(state: string): 'success' | 'warning' | 'danger' | 'mute
 export function LiveChargingScreen() {
   const vm = useLiveChargingViewModel({ autoConnect: true });
 
-  const chartWidth = Dimensions.get('window').width - theme.spacing.md * 2 - 2;
+  const chartWidth = Dimensions.get('window').width - theme.spacing.md * 4 - 2;
 
   const chart = useMemo(() => {
     if (!vm.powerSeries.length) {

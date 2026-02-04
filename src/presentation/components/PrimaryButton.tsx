@@ -15,10 +15,13 @@ export function PrimaryButton({
   onPress: () => void;
   disabled?: boolean;
   loading?: boolean;
-  tone?: 'primary' | 'danger';
+  tone?: 'primary' | 'danger' | 'dark';
   fullWidth?: boolean;
 }) {
-  const bg = tone === 'danger' ? theme.colors.danger : theme.colors.primary;
+  const bg =
+    tone === 'danger' ? theme.colors.danger : tone === 'dark' ? theme.colors.dark : theme.colors.primary;
+  const fg =
+    tone === 'danger' ? theme.colors.onDanger : tone === 'dark' ? theme.colors.onDark : theme.colors.onPrimary;
   return (
     <Pressable
       onPress={onPress}
@@ -29,7 +32,7 @@ export function PrimaryButton({
         { backgroundColor: bg, opacity: disabled || loading ? 0.5 : pressed ? 0.85 : 1 },
       ]}
     >
-      {loading ? <ActivityIndicator color={theme.colors.text} /> : <Text style={styles.title}>{title}</Text>}
+      {loading ? <ActivityIndicator color={fg} /> : <Text style={[styles.title, { color: fg }]}>{title}</Text>}
     </Pressable>
   );
 }
@@ -44,5 +47,5 @@ const styles = StyleSheet.create({
   },
   fullWidth: { width: '100%' },
   compact: { alignSelf: 'flex-start' },
-  title: { color: theme.colors.text, fontWeight: '700', fontSize: 16 },
+  title: { fontWeight: '800', fontSize: 16 },
 });

@@ -3,6 +3,8 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import type { HistoryStackParamList } from '../navigation/types';
+import { appConfig } from '../../config/appConfig';
+import { estimateChargingCost, formatMoney } from '../../core/cost';
 import { formatDateTime, formatDuration } from '../../core/time';
 import { Card } from '../components/Card';
 import { ErrorBanner } from '../components/ErrorBanner';
@@ -36,6 +38,17 @@ export function SessionDetailsScreen({ route }: Props) {
             value={vm.session?.elapsedSeconds != null ? formatDuration(vm.session.elapsedSeconds) : '—'}
           />
           <LabeledValue label="Energy" value={vm.session ? `${vm.session.energyWh.toFixed(1)} Wh` : '—'} />
+          <LabeledValue
+            label="Cost"
+            value={
+              vm.session
+                ? formatMoney({
+                    amount: estimateChargingCost({ energyWh: vm.session.energyWh, costPerKwh: appConfig.costPerKwh }),
+                    currencySymbol: appConfig.currencySymbol,
+                  })
+                : '—'
+            }
+          />
           <LabeledValue label="Stop reason" value={vm.session?.stopReason ?? '—'} />
         </View>
 
@@ -51,4 +64,3 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   title: { color: theme.colors.text, fontWeight: '900', fontSize: 18 },
 });
-

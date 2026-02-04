@@ -14,6 +14,7 @@ export function HistoryStack() {
       screenOptions={{
         headerStyle: { backgroundColor: theme.colors.bg },
         headerTintColor: theme.colors.text,
+        headerShadowVisible: false,
         contentStyle: { backgroundColor: theme.colors.bg },
       }}
     >
@@ -22,4 +23,3 @@ export function HistoryStack() {
     </Stack.Navigator>
   );
 }
-

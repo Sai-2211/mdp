@@ -25,6 +25,8 @@ Set these Expo public env vars (recommended) when running:
 - `EXPO_PUBLIC_WS_URL` (example: `wss://api.example.com/charging/live`)
 - `EXPO_PUBLIC_USE_MOCK` (`true` / `false`)
 - `EXPO_PUBLIC_WS_AUTH_MODE` (`header` / `query`) — defaults to `header`
+- `EXPO_PUBLIC_COST_PER_KWH` (example: `0.20`)
+- `EXPO_PUBLIC_CURRENCY_SYMBOL` (example: `$`)
 
 Example:
 

@@ -6,7 +6,7 @@ import { AppRoot } from './src/AppRoot';
 export default function App() {
   return (
     <SafeAreaProvider>
-      <StatusBar style="light" />
+      <StatusBar style="dark" />
       <AppRoot />
     </SafeAreaProvider>
   );

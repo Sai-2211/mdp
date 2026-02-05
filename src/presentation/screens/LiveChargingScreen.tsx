@@ -676,8 +676,10 @@ function PowerChartCard({ store }: { store: LiveChargingStore }) {
 }
 
 export function LiveChargingScreen() {
-  const { liveChargingRepository } = useRepositories();
+  const { liveChargingRepository, chargerRepository } = useRepositories();
   const storeRef = useRef<LiveChargingStore | null>(null);
+  const autoStopInFlightRef = useRef(false);
+  const lastAutoStopSessionRef = useRef<string | null>(null);
   if (!storeRef.current) {
     storeRef.current = new LiveChargingStore(liveChargingRepository as any);
   }
@@ -689,6 +691,28 @@ export function LiveChargingScreen() {
   }, [store]);
 
   const connectionState = useStoreSelector(store, (s) => s.connectionState);
+  const batteryPercent = useStoreSelector(store, (s) => s.state.batteryPercentage);
+  const chargerState = useStoreSelector(store, (s) => s.state.chargerState);
+  const sessionId = useStoreSelector(store, (s) => s.state.sessionId);
+
+  useEffect(() => {
+    if (batteryPercent < 100) return;
+    if (chargerState === 'idle') return;
+    if (!sessionId) return;
+    if (autoStopInFlightRef.current) return;
+    if (lastAutoStopSessionRef.current === sessionId) return;
+
+    autoStopInFlightRef.current = true;
+    void chargerRepository
+      .stopCharging()
+      .catch(() => {
+        // Ignore failures; user can retry manually if needed.
+      })
+      .finally(() => {
+        autoStopInFlightRef.current = false;
+        lastAutoStopSessionRef.current = sessionId;
+      });
+  }, [batteryPercent, chargerState, sessionId, chargerRepository]);
 
   return (
     <Screen>

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Animated, Dimensions, Easing, StyleSheet, Text, View } from 'react-native';
+import { Alert, Animated, Dimensions, Easing, StyleSheet, Text, View } from 'react-native';
 import { LineChart } from 'react-native-chart-kit';
 import Svg, { Circle } from 'react-native-svg';
 import { Ionicons } from '@expo/vector-icons';
@@ -679,7 +679,7 @@ export function LiveChargingScreen() {
   const { liveChargingRepository, chargerRepository } = useRepositories();
   const storeRef = useRef<LiveChargingStore | null>(null);
   const autoStopInFlightRef = useRef(false);
-  const lastAutoStopSessionRef = useRef<string | null>(null);
+  const lastAutoStopKeyRef = useRef<string | null>(null);
   if (!storeRef.current) {
     storeRef.current = new LiveChargingStore(liveChargingRepository as any);
   }
@@ -694,25 +694,35 @@ export function LiveChargingScreen() {
   const batteryPercent = useStoreSelector(store, (s) => s.state.batteryPercentage);
   const chargerState = useStoreSelector(store, (s) => s.state.chargerState);
   const sessionId = useStoreSelector(store, (s) => s.state.sessionId);
+  const chargingStartTimestamp = useStoreSelector(store, (s) => s.state.chargingStartTimestamp);
+
+  useEffect(() => {
+    if (batteryPercent < 100) {
+      lastAutoStopKeyRef.current = null;
+    }
+  }, [batteryPercent]);
 
   useEffect(() => {
     if (batteryPercent < 100) return;
     if (chargerState === 'idle') return;
-    if (!sessionId) return;
     if (autoStopInFlightRef.current) return;
-    if (lastAutoStopSessionRef.current === sessionId) return;
+    const completionKey = sessionId ?? (chargingStartTimestamp ? `ts:${chargingStartTimestamp}` : 'no-session');
+    if (lastAutoStopKeyRef.current === completionKey) return;
 
     autoStopInFlightRef.current = true;
     void chargerRepository
       .stopCharging()
+      .then(() => {
+        Alert.alert('Charging complete', 'Battery reached 100%. Charging has been stopped.');
+      })
       .catch(() => {
-        // Ignore failures; user can retry manually if needed.
+        Alert.alert('Charging complete', 'Battery reached 100%. If charging continues, tap Stop.');
       })
       .finally(() => {
         autoStopInFlightRef.current = false;
-        lastAutoStopSessionRef.current = sessionId;
+        lastAutoStopKeyRef.current = completionKey;
       });
-  }, [batteryPercent, chargerState, sessionId, chargerRepository]);
+  }, [batteryPercent, chargerState, sessionId, chargingStartTimestamp, chargerRepository]);
 
   return (
     <Screen>

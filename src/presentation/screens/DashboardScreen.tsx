@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { useFocusEffect } from '@react-navigation/native';
 
@@ -139,6 +139,8 @@ export function DashboardScreen() {
   const live = useLiveChargingViewModel({ autoConnect: true });
   const recent = useRecentSessionsViewModel({ limit: 3 });
   const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const autoStopInFlightRef = useRef(false);
+  const lastAutoStopSessionRef = useRef<string | null>(null);
 
   const canStart = useMemo(() => {
     if (!vm.status) return false;
@@ -181,6 +183,37 @@ export function DashboardScreen() {
     vm.status?.state === 'charging' ? 'success' : vm.status?.state === 'unavailable' ? 'warning' : 'muted';
 
   const latest = live.latest;
+  const batteryPercent = latest?.batteryPercent;
+  const sessionId = latest?.sessionId;
+  const liveChargerState = latest?.chargerState;
+
+  useEffect(() => {
+    if (batteryPercent != null && batteryPercent < 100) {
+      lastAutoStopSessionRef.current = null;
+    }
+  }, [batteryPercent]);
+
+  useEffect(() => {
+    if (batteryPercent == null || batteryPercent < 100) return;
+    if (liveChargerState !== 'charging') return;
+    if (autoStopInFlightRef.current) return;
+    const completionKey = sessionId ?? 'no-session';
+    if (lastAutoStopSessionRef.current === completionKey) return;
+
+    autoStopInFlightRef.current = true;
+    void vm
+      .stop()
+      .then(() => {
+        Alert.alert('Charging complete', 'Battery reached 100%. Charging has been stopped.');
+      })
+      .catch(() => {
+        Alert.alert('Charging complete', 'Battery reached 100%. If charging continues, tap Stop.');
+      })
+      .finally(() => {
+        autoStopInFlightRef.current = false;
+        lastAutoStopSessionRef.current = completionKey;
+      });
+  }, [batteryPercent, liveChargerState, sessionId, vm.stop]);
 
   const currentCost = latest
     ? formatMoney({

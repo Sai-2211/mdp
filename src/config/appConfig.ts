@@ -25,6 +25,6 @@ export const appConfig: AppConfig = {
   wsUrl: process.env.EXPO_PUBLIC_WS_URL ?? 'ws://localhost:3000/charging/live',
   useMock: (process.env.EXPO_PUBLIC_USE_MOCK ?? 'false').toLowerCase() === 'true',
   wsAuthMode: (process.env.EXPO_PUBLIC_WS_AUTH_MODE ?? 'header') as WebSocketAuthMode,
-  costPerKwh: parseNumber(process.env.EXPO_PUBLIC_COST_PER_KWH, 0.2),
-  currencySymbol: process.env.EXPO_PUBLIC_CURRENCY_SYMBOL ?? '$',
+  costPerKwh: parseNumber(process.env.EXPO_PUBLIC_COST_PER_KWH, 6),
+  currencySymbol: process.env.EXPO_PUBLIC_CURRENCY_SYMBOL ?? '₹',
 };

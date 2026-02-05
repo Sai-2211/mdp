@@ -2,7 +2,7 @@ import React from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { appConfig } from '../../config/appConfig';
-import { estimateChargingCost, formatMoney } from '../../core/cost';
+import { energyWhToKwh, estimateChargingCost, formatMoney } from '../../core/cost';
 import { Card } from '../components/Card';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { LabeledValue } from '../components/LabeledValue';
@@ -27,7 +27,7 @@ export function ProfileScreen() {
         <View style={{ marginTop: theme.spacing.md, gap: theme.spacing.sm }}>
           <LabeledValue label="Email" value={vm.email} />
           <LabeledValue label="Backend Mode" value={vm.backendMode} />
-          <LabeledValue label="Total Energy" value={`${vm.totalEnergyWh.toFixed(1)} Wh`} />
+          <LabeledValue label="Total Energy" value={`${energyWhToKwh(vm.totalEnergyWh).toFixed(2)} kWh`} />
           <LabeledValue
             label="Total Cost"
             value={formatMoney({

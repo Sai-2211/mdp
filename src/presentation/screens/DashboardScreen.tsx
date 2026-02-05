@@ -4,7 +4,7 @@ import Svg, { Circle } from 'react-native-svg';
 import { useFocusEffect } from '@react-navigation/native';
 
 import { appConfig } from '../../config/appConfig';
-import { estimateChargingCost, formatMoney } from '../../core/cost';
+import { energyWhToKwh, estimateChargingCost, formatMoney } from '../../core/cost';
 import { formatDateTime, formatDuration } from '../../core/time';
 import { Card } from '../components/Card';
 import { ErrorBanner } from '../components/ErrorBanner';
@@ -22,7 +22,13 @@ function envNumber(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-const BATTERY_CAPACITY_WH = envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 50);
+const BATTERY_CAPACITY_KWH = Math.max(
+  0.1,
+  envNumber(
+    process.env.EXPO_PUBLIC_BATTERY_CAPACITY_KWH,
+    envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 5000) / 1000,
+  ),
+);
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
@@ -75,6 +81,7 @@ function AnimatedValueText({ text, style }: { text: string; style: any }) {
 
 function ChargingProgressRing({ batteryPercent, energyWh }: { batteryPercent: number; energyWh: number }) {
   const percent = clamp01((Number(batteryPercent) || 0) / 100);
+  const energyKwh = energyWhToKwh(energyWh);
   const size = 184;
   const stroke = 12;
   const r = (size - stroke) / 2;
@@ -127,7 +134,7 @@ function ChargingProgressRing({ batteryPercent, energyWh }: { batteryPercent: nu
       </View>
 
       <Text style={styles.ringSub}>
-        {(Number(energyWh) || 0).toFixed(1)} Wh of {BATTERY_CAPACITY_WH.toFixed(0)} Wh
+        {energyKwh.toFixed(2)} kWh of {BATTERY_CAPACITY_KWH.toFixed(1)} kWh
       </Text>
       <Text style={styles.ringDisclaimer}>Estimated values • Prototype charger</Text>
     </Card>
@@ -290,7 +297,7 @@ export function DashboardScreen() {
   	            <MetricTile label="Voltage" value={latest ? `${latest.voltage.toFixed(1)} V` : '—'} />
   	            <MetricTile label="Current" value={latest ? `${latest.current.toFixed(2)} A` : '—'} />
   	            <MetricTile label="Power" value={latest ? `${latest.power.toFixed(0)} W` : '—'} />
-  	            <MetricTile label="Energy" value={latest ? `${latest.energyWh.toFixed(1)} Wh` : '—'} />
+  	            <MetricTile label="Energy" value={latest ? `${energyWhToKwh(latest.energyWh).toFixed(2)} kWh` : '—'} />
   	            <MetricTile label="Battery" value={latest ? `${latest.batteryPercent.toFixed(0)}%` : '—'} />
   	            <MetricTile label="Elapsed" value={latest ? formatDuration(latest.elapsedSeconds) : '—'} />
   	            <MetricTile label="Session" value={latest?.sessionId ? latest.sessionId : '—'} hint="Backend session id" />
@@ -323,7 +330,7 @@ export function DashboardScreen() {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.sessionTitle}>{formatDateTime(s.startTime)}</Text>
                       <Text style={styles.sessionSub}>
-                        {duration} • {(Number(s.energyWh) || 0).toFixed(1)} Wh • {cost}
+                        {duration} • {energyWhToKwh(s.energyWh).toFixed(2)} kWh • {cost}
                       </Text>
                       <Text style={styles.sessionMeta}>Stop reason: {s.stopReason ?? '—'}</Text>
                     </View>

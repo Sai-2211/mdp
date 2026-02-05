@@ -26,7 +26,7 @@ const BATTERY_CAPACITY_KWH = Math.max(
   0.1,
   envNumber(
     process.env.EXPO_PUBLIC_BATTERY_CAPACITY_KWH,
-    envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 50) / 1000,
+    envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 5000) / 1000,
   ),
 );
 // Indian AC001-style home charger default (≈3.3 kW). Override via env if needed.

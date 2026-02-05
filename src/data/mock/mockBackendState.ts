@@ -7,7 +7,7 @@ function envNumber(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-const BATTERY_CAPACITY_WH = envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 50);
+const BATTERY_CAPACITY_WH = envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 5000);
 const BATTERY_CAPACITY_KWH = envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_KWH, BATTERY_CAPACITY_WH / 1000);
 const MAX_CHARGING_POWER_KW = envNumber(process.env.EXPO_PUBLIC_MAX_CHARGING_POWER_KW, 3.3);
 

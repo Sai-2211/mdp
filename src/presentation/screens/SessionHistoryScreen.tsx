@@ -4,7 +4,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import type { HistoryStackParamList } from '../navigation/types';
 import { appConfig } from '../../config/appConfig';
-import { estimateChargingCost, formatMoney } from '../../core/cost';
+import { energyWhToKwh, estimateChargingCost, formatMoney } from '../../core/cost';
 import { formatDateTime, formatDuration } from '../../core/time';
 import type { ChargingSession } from '../../domain/entities/session';
 import { Card } from '../components/Card';
@@ -18,7 +18,7 @@ type Props = NativeStackScreenProps<HistoryStackParamList, 'SessionHistory'>;
 
 function sessionSubtitle(s: ChargingSession): string {
   const duration = s.elapsedSeconds != null ? formatDuration(s.elapsedSeconds) : '—';
-  const energy = `${(Number(s.energyWh) || 0).toFixed(1)} Wh`;
+  const energy = `${energyWhToKwh(s.energyWh).toFixed(2)} kWh`;
   const cost = formatMoney({
     amount: estimateChargingCost({ energyWh: s.energyWh, costPerKwh: appConfig.costPerKwh }),
     currencySymbol: appConfig.currencySymbol,
@@ -45,7 +45,7 @@ export function SessionHistoryScreen({ navigation }: Props) {
       <Card style={{ marginTop: theme.spacing.md }}>
         <Text style={styles.sectionTitle}>Account Summary</Text>
         <View style={{ marginTop: theme.spacing.md, gap: theme.spacing.sm }}>
-          <LabeledValue label="Total Energy" value={`${vm.totalEnergyWh.toFixed(1)} Wh`} />
+          <LabeledValue label="Total Energy" value={`${energyWhToKwh(vm.totalEnergyWh).toFixed(2)} kWh`} />
           <LabeledValue
             label="Total Cost"
             value={formatMoney({ amount: totalCost, currencySymbol: appConfig.currencySymbol })}

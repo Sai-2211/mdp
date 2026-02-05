@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useRef } from 'react';
-import { ActivityIndicator, Dimensions, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { LineChart } from 'react-native-chart-kit';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import Svg, { Circle } from 'react-native-svg';
 import { useFocusEffect } from '@react-navigation/native';
 
 import { appConfig } from '../../config/appConfig';
@@ -17,11 +17,121 @@ import { useDashboardViewModel } from '../viewModels/useDashboardViewModel';
 import { useLiveChargingViewModel } from '../viewModels/useLiveChargingViewModel';
 import { useRecentSessionsViewModel } from '../viewModels/useRecentSessionsViewModel';
 
+function envNumber(value: string | undefined, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+const BATTERY_CAPACITY_WH = envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 50);
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
 function connectionTone(state: string): 'success' | 'warning' | 'danger' | 'muted' {
   if (state === 'connected') return 'success';
   if (state === 'connecting') return 'warning';
   if (state === 'error') return 'danger';
   return 'muted';
+}
+
+function AnimatedValueText({ text, style }: { text: string; style: any }) {
+  // Subtle cross-fade + scale to avoid abrupt jumps.
+  const [current, setCurrent] = useState(text);
+  const [previous, setPrevious] = useState<string | null>(null);
+  const anim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    if (text === current) return;
+    setPrevious(current);
+    setCurrent(text);
+    anim.stopAnimation();
+    anim.setValue(0);
+    Animated.timing(anim, {
+      toValue: 1,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start(() => setPrevious(null));
+  }, [anim, current, text]);
+
+  const prevOpacity = anim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
+  const nextOpacity = anim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
+  const nextScale = anim.interpolate({ inputRange: [0, 1], outputRange: [0.98, 1] });
+
+  return (
+    <View style={{ position: 'relative', justifyContent: 'center' }}>
+      {previous != null ? (
+        <Animated.Text style={[style, { position: 'absolute', opacity: prevOpacity }]} numberOfLines={1}>
+          {previous}
+        </Animated.Text>
+      ) : null}
+      <Animated.Text style={[style, { opacity: nextOpacity, transform: [{ scale: nextScale }] }]} numberOfLines={1}>
+        {current}
+      </Animated.Text>
+    </View>
+  );
+}
+
+function ChargingProgressRing({ batteryPercent, energyWh }: { batteryPercent: number; energyWh: number }) {
+  const percent = clamp01((Number(batteryPercent) || 0) / 100);
+  const size = 184;
+  const stroke = 12;
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+
+  const dashOffset = useRef(new Animated.Value(c)).current;
+  useEffect(() => {
+    // Smooth progress animation; only ring and inner % text animate.
+    Animated.timing(dashOffset, {
+      toValue: c * (1 - percent),
+      duration: 400,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [c, dashOffset, percent]);
+
+  const AnimatedCircle = useMemo(() => Animated.createAnimatedComponent(Circle), []);
+
+  return (
+    <Card style={styles.ringCard}>
+      <Text style={styles.ringTitle}>Charging progress</Text>
+      <View style={styles.ringWrap}>
+        <Svg width={size} height={size}>
+          <Circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            stroke={theme.colors.border}
+            strokeWidth={stroke}
+            fill="none"
+          />
+          <AnimatedCircle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            stroke={theme.colors.primary}
+            strokeWidth={stroke}
+            strokeLinecap="round"
+            fill="none"
+            strokeDasharray={`${c} ${c}`}
+            strokeDashoffset={dashOffset}
+            transform={`rotate(-90 ${size / 2} ${size / 2})`}
+          />
+        </Svg>
+
+        <View style={styles.ringCenter}>
+          <AnimatedValueText text={`${(Number(batteryPercent) || 0).toFixed(0)}%`} style={styles.ringPercent} />
+          <Text style={styles.ringCaption}>Battery</Text>
+        </View>
+      </View>
+
+      <Text style={styles.ringSub}>
+        {(Number(energyWh) || 0).toFixed(1)} Wh of {BATTERY_CAPACITY_WH.toFixed(0)} Wh
+      </Text>
+      <Text style={styles.ringDisclaimer}>Estimated values • Prototype charger</Text>
+    </Card>
+  );
 }
 
 export function DashboardScreen() {
@@ -71,15 +181,6 @@ export function DashboardScreen() {
     vm.status?.state === 'charging' ? 'success' : vm.status?.state === 'unavailable' ? 'warning' : 'muted';
 
   const latest = live.latest;
-  const chartWidth = Dimensions.get('window').width - theme.spacing.md * 4 - 2;
-
-  const chart = useMemo(() => {
-    if (!live.powerSeries.length) {
-      return { labels: [''], datasets: [{ data: [0] }] };
-    }
-    const labels = live.elapsedSeries.map((s, idx) => (idx % 10 === 0 ? `${Math.floor(s)}s` : ''));
-    return { labels, datasets: [{ data: live.powerSeries }] };
-  }, [live.elapsedSeries, live.powerSeries]);
 
   const currentCost = latest
     ? formatMoney({
@@ -134,62 +235,37 @@ export function DashboardScreen() {
               loading={vm.actionLoading === 'stop'}
               tone="danger"
             />
-          </View>
-        </View>
+  	        </View>
+  	      </View>
 
-        <Card>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Live Monitoring</Text>
-            <View style={styles.sectionHeaderRight}>
-              <StatusPill label={`WS: ${live.connectionState}`} tone={connectionTone(live.connectionState)} />
-              <PrimaryButton title="Reconnect" onPress={() => void live.connect()} fullWidth={false} />
-            </View>
-          </View>
+        <ChargingProgressRing batteryPercent={latest?.batteryPercent ?? 0} energyWh={latest?.energyWh ?? 0} />
+
+  	      <Card>
+  	        <View style={styles.sectionHeader}>
+  	          <Text style={styles.sectionTitle}>Live Monitoring</Text>
+  	          <View style={styles.sectionHeaderRight}>
+  	            <StatusPill label={`WS: ${live.connectionState}`} tone={connectionTone(live.connectionState)} />
+  	          </View>
+  	        </View>
 
           <Text style={styles.sectionHint}>
             Rate: {appConfig.currencySymbol}
             {appConfig.costPerKwh.toFixed(2)}/kWh
           </Text>
 
-          <View style={styles.grid}>
-            <MetricTile label="Voltage" value={latest ? `${latest.voltage.toFixed(1)} V` : '—'} />
-            <MetricTile label="Current" value={latest ? `${latest.current.toFixed(2)} A` : '—'} />
-            <MetricTile label="Power" value={latest ? `${latest.power.toFixed(0)} W` : '—'} />
-            <MetricTile label="Energy" value={latest ? `${latest.energyWh.toFixed(1)} Wh` : '—'} />
-            <MetricTile label="Battery" value={latest ? `${latest.batteryPercent.toFixed(0)}%` : '—'} />
-            <MetricTile label="Elapsed" value={latest ? formatDuration(latest.elapsedSeconds) : '—'} />
-            <MetricTile label="Session" value={latest?.sessionId ? latest.sessionId : '—'} hint="Backend session id" />
-            <MetricTile label="Cost (est)" value={currentCost} hint="Based on energy received" />
-          </View>
+  	          <View style={styles.grid}>
+  	            <MetricTile label="Voltage" value={latest ? `${latest.voltage.toFixed(1)} V` : '—'} />
+  	            <MetricTile label="Current" value={latest ? `${latest.current.toFixed(2)} A` : '—'} />
+  	            <MetricTile label="Power" value={latest ? `${latest.power.toFixed(0)} W` : '—'} />
+  	            <MetricTile label="Energy" value={latest ? `${latest.energyWh.toFixed(1)} Wh` : '—'} />
+  	            <MetricTile label="Battery" value={latest ? `${latest.batteryPercent.toFixed(0)}%` : '—'} />
+  	            <MetricTile label="Elapsed" value={latest ? formatDuration(latest.elapsedSeconds) : '—'} />
+  	            <MetricTile label="Session" value={latest?.sessionId ? latest.sessionId : '—'} hint="Backend session id" />
+  	            <MetricTile label="Cost (est)" value={currentCost} hint="Based on energy received" />
+  	          </View>
+  	      </Card>
 
-          <View style={{ marginTop: theme.spacing.md }}>
-            <Text style={styles.chartTitle}>Power vs Time</Text>
-            <View style={{ marginTop: theme.spacing.sm }}>
-              <LineChart
-                data={chart}
-                width={chartWidth}
-                height={220}
-                withDots={false}
-                withInnerLines={false}
-                withOuterLines={false}
-                withShadow={false}
-                yAxisSuffix="W"
-                chartConfig={{
-                  backgroundGradientFrom: theme.colors.card2,
-                  backgroundGradientTo: theme.colors.card2,
-                  decimalPlaces: 0,
-                  color: () => theme.colors.text,
-                  labelColor: () => theme.colors.muted,
-                  propsForBackgroundLines: { stroke: theme.colors.border },
-                }}
-                bezier
-                style={{ borderRadius: theme.radius.md }}
-              />
-            </View>
-          </View>
-        </Card>
-
-        <Card>
+  	      <Card>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Recent Sessions</Text>
             <Pressable onPress={() => void recent.refresh()} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
@@ -250,13 +326,29 @@ const styles = StyleSheet.create({
   sectionHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm, flexWrap: 'wrap', justifyContent: 'flex-end' },
   sectionTitle: { color: theme.colors.text, fontWeight: '900', fontSize: 16 },
   sectionHint: { marginTop: 6, color: theme.colors.muted, fontWeight: '700' },
+  ringCard: {
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingVertical: theme.spacing.lg,
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
+  },
+  ringTitle: { color: theme.colors.text, fontWeight: '900', fontSize: 16 },
+  ringWrap: { width: 184, height: 184, alignItems: 'center', justifyContent: 'center' },
+  ringCenter: { position: 'absolute', alignItems: 'center' },
+  ringPercent: { color: theme.colors.text, fontWeight: '900', fontSize: 30 },
+  ringCaption: { color: theme.colors.muted, fontWeight: '800', marginTop: 2 },
+  ringSub: { color: theme.colors.muted, fontWeight: '800' },
+  ringDisclaimer: { color: theme.colors.muted, fontWeight: '700', fontSize: 12 },
   grid: {
     marginTop: theme.spacing.md,
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: theme.spacing.sm,
   },
-  chartTitle: { color: theme.colors.text, fontWeight: '900' },
   empty: { color: theme.colors.muted, fontWeight: '700' },
   sessionRow: {
     flexDirection: 'row',

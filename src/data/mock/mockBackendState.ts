@@ -2,6 +2,15 @@ import type { ChargerState, ChargerStatus } from '../../domain/entities/charger'
 import type { ChargingSession } from '../../domain/entities/session';
 import type { LiveChargingTelemetry } from '../../domain/entities/liveCharging';
 
+function envNumber(value: string | undefined, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+const BATTERY_CAPACITY_WH = envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 50);
+const BATTERY_CAPACITY_KWH = envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_KWH, BATTERY_CAPACITY_WH / 1000);
+const MAX_CHARGING_POWER_KW = envNumber(process.env.EXPO_PUBLIC_MAX_CHARGING_POWER_KW, 3.3);
+
 function randomId(prefix: string) {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
 }
@@ -16,7 +25,7 @@ export class MockBackendState {
   currentElapsedSeconds = 0;
 
   // Used only to simulate backend estimation for mock mode.
-  batteryCapacityWh = 40000;
+  batteryCapacityWh = Math.max(50, BATTERY_CAPACITY_KWH * 1000);
 
   sessions: ChargingSession[] = [
     {
@@ -72,12 +81,13 @@ export class MockBackendState {
 
   tick(): LiveChargingTelemetry {
     // Simple/consistent physics-ish simulation for UI testing.
-    const voltage = 380;
+    const voltage = 230;
+    const maxKw = Math.max(0.5, MAX_CHARGING_POWER_KW);
     const basePowerKw =
       this.chargerState === 'charging'
-        ? 30 + 22 * Math.sin(this.currentElapsedSeconds / 9) + 8 * Math.sin(this.currentElapsedSeconds / 4.5)
+        ? maxKw * (0.65 + 0.25 * Math.sin(this.currentElapsedSeconds / 7) + 0.1 * Math.sin(this.currentElapsedSeconds / 3.5))
         : 0;
-    const powerKw = Math.max(0, basePowerKw);
+    const powerKw = Math.max(0, Math.min(maxKw, basePowerKw));
     const power = powerKw * 1000;
     const current = power / voltage;
 

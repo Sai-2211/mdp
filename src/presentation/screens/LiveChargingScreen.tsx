@@ -26,9 +26,11 @@ const BATTERY_CAPACITY_KWH = Math.max(
   0.1,
   envNumber(
     process.env.EXPO_PUBLIC_BATTERY_CAPACITY_KWH,
-    envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 40000) / 1000,
+    envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 50) / 1000,
   ),
 );
+// Indian AC001-style home charger default (≈3.3 kW). Override via env if needed.
+const MAX_CHARGING_POWER_KW = Math.max(0.1, envNumber(process.env.EXPO_PUBLIC_MAX_CHARGING_POWER_KW, 3.3));
 const MAX_INTEGRATION_SECONDS = Math.max(1, envNumber(process.env.EXPO_PUBLIC_MAX_INTEGRATION_SECONDS, 8));
 
 type LiveConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
@@ -140,7 +142,8 @@ function updateChargingState(
 ): LiveChargingState {
   const capacity = Math.max(0.1, prev.batteryCapacityKWh);
   const isCharging = telemetry.chargerState === 'charging';
-  const powerKW = Math.max(0, telemetry.power) / 1000;
+  const rawPowerKW = Math.max(0, telemetry.power) / 1000;
+  const powerKW = clamp(rawPowerKW, 0, MAX_CHARGING_POWER_KW);
   const sessionId = typeof telemetry.sessionId === 'string' ? telemetry.sessionId : prev.sessionId;
 
   const sessionChanged = Boolean(sessionId && sessionId !== prev.sessionId);

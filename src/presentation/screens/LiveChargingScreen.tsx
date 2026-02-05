@@ -22,7 +22,14 @@ function envNumber(value: string | undefined, fallback: number): number {
 
 const CHART_WINDOW_SECONDS = envNumber(process.env.EXPO_PUBLIC_CHART_WINDOW_SECONDS, 45);
 const CHART_SMOOTHING_SAMPLES = envNumber(process.env.EXPO_PUBLIC_CHART_SMOOTHING_N, 10);
-const BATTERY_CAPACITY_WH = envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 50);
+const BATTERY_CAPACITY_KWH = Math.max(
+  0.1,
+  envNumber(
+    process.env.EXPO_PUBLIC_BATTERY_CAPACITY_KWH,
+    envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 40000) / 1000,
+  ),
+);
+const MAX_INTEGRATION_SECONDS = Math.max(1, envNumber(process.env.EXPO_PUBLIC_MAX_INTEGRATION_SECONDS, 8));
 
 type LiveConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -31,6 +38,7 @@ type LiveChargingTelemetry = {
   current: number;
   power: number;
   energyWh: number;
+  sessionId: string;
   elapsedSeconds: number;
   batteryPercent: number;
   chargerState: 'idle' | 'charging' | 'finished';
@@ -44,9 +52,24 @@ type LiveChargingRepository = {
   subscribe(listener: (data: LiveChargingTelemetry) => void): () => void;
 };
 
+type LiveChargingState = {
+  batteryCapacityKWh: number;
+  currentBatteryEnergyKWh: number;
+  chargingPowerKW: number;
+  chargingStartTimestamp: number | null;
+  lastUpdateTimestamp: number | null;
+  totalEnergyAddedKWh: number;
+  batteryPercentage: number;
+  elapsedSeconds: number;
+  voltage: number;
+  currentA: number;
+  sessionId: string | null;
+  chargerState: UiChargerState;
+};
+
 type StoreSnapshot = {
   connectionState: LiveConnectionState;
-  telemetry: LiveChargingTelemetry | null;
+  state: LiveChargingState;
   dataWarning: boolean;
 };
 
@@ -61,6 +84,10 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
 function connectionTone(state: LiveConnectionState): 'success' | 'warning' | 'danger' | 'muted' {
   if (state === 'connected') return 'success';
   if (state === 'connecting') return 'warning';
@@ -68,27 +95,115 @@ function connectionTone(state: LiveConnectionState): 'success' | 'warning' | 'da
   return 'muted';
 }
 
-function deriveUiChargerState(t: LiveChargingTelemetry | null): UiChargerState {
-  if (!t) return 'idle';
-  if (t.chargerState === 'charging') return 'charging';
-  if (t.chargerState === 'finished') return 'finished';
-  // UI-only heuristic to represent "finished" even if backend maps it to idle in the stream.
-  if (t.batteryPercent >= 99.5 && t.energyWh > 0) return 'finished';
-  return 'idle';
-}
-
-function isValidTelemetry(t: LiveChargingTelemetry): boolean {
+function validateTelemetry(t: LiveChargingTelemetry): { usable: boolean; warning: boolean } {
   // Defensive UI validation: keep last valid UI values if stream data is invalid.
   const n = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
-  if (!t || typeof t !== 'object') return false;
-  if (!n(t.voltage) || t.voltage < 0) return false;
-  if (!n(t.current) || t.current < 0) return false;
-  if (!n(t.power) || t.power < 0) return false;
-  if (!n(t.energyWh) || t.energyWh < 0) return false;
-  if (!n(t.elapsedSeconds) || t.elapsedSeconds < 0) return false;
-  if (!n(t.batteryPercent) || t.batteryPercent < 0 || t.batteryPercent > 100) return false;
-  if (t.chargerState !== 'idle' && t.chargerState !== 'charging' && t.chargerState !== 'finished') return false;
-  return true;
+  if (!t || typeof t !== 'object') return { usable: false, warning: true };
+  if (!n(t.voltage) || t.voltage < 0) return { usable: false, warning: true };
+  if (!n(t.current) || t.current < 0) return { usable: false, warning: true };
+  if (!n(t.power)) return { usable: false, warning: true };
+  if (t.chargerState !== 'idle' && t.chargerState !== 'charging' && t.chargerState !== 'finished') {
+    return { usable: false, warning: true };
+  }
+
+  let warning = false;
+  if (t.power < 0) warning = true;
+  if (!n(t.energyWh) || t.energyWh < 0) warning = true;
+  if (!n(t.elapsedSeconds) || t.elapsedSeconds < 0) warning = true;
+  if (!n(t.batteryPercent) || t.batteryPercent < 0 || t.batteryPercent > 100) warning = true;
+  if (typeof t.sessionId !== 'string') warning = true;
+
+  return { usable: true, warning };
+}
+
+function createInitialChargingState(): LiveChargingState {
+  return {
+    batteryCapacityKWh: BATTERY_CAPACITY_KWH,
+    currentBatteryEnergyKWh: 0,
+    chargingPowerKW: 0,
+    chargingStartTimestamp: null,
+    lastUpdateTimestamp: null,
+    totalEnergyAddedKWh: 0,
+    batteryPercentage: 0,
+    elapsedSeconds: 0,
+    voltage: 0,
+    currentA: 0,
+    sessionId: null,
+    chargerState: 'idle',
+  };
+}
+
+function updateChargingState(
+  prev: LiveChargingState,
+  telemetry: LiveChargingTelemetry,
+  now: number,
+): LiveChargingState {
+  const capacity = Math.max(0.1, prev.batteryCapacityKWh);
+  const isCharging = telemetry.chargerState === 'charging';
+  const powerKW = Math.max(0, telemetry.power) / 1000;
+  const sessionId = typeof telemetry.sessionId === 'string' ? telemetry.sessionId : prev.sessionId;
+
+  const sessionChanged = Boolean(sessionId && sessionId !== prev.sessionId);
+  const startedCharging = isCharging && prev.chargerState !== 'charging';
+
+  let next: LiveChargingState = {
+    ...prev,
+    voltage: telemetry.voltage,
+    currentA: telemetry.current,
+    chargingPowerKW: isCharging ? powerKW : 0,
+    sessionId: sessionId ?? null,
+  };
+
+  if (sessionChanged || startedCharging) {
+    // Reset charging state on new session.
+    next = {
+      ...next,
+      currentBatteryEnergyKWh: 0,
+      totalEnergyAddedKWh: 0,
+      batteryPercentage: 0,
+      elapsedSeconds: 0,
+      chargingStartTimestamp: now,
+      lastUpdateTimestamp: now,
+    };
+  }
+
+  if (isCharging && next.chargingStartTimestamp == null) {
+    next.chargingStartTimestamp = now;
+  }
+
+  const lastUpdate = next.lastUpdateTimestamp ?? now;
+  const rawDeltaSeconds = Math.max(0, (now - lastUpdate) / 1000);
+  // Cap delta to avoid large jumps after background/resume.
+  const deltaSeconds = Math.min(rawDeltaSeconds, MAX_INTEGRATION_SECONDS);
+
+  if (isCharging && next.chargingPowerKW > 0 && next.batteryPercentage < 100 && deltaSeconds > 0) {
+    // Integration: convert power to energy using elapsed time in hours.
+    const deltaEnergyKWh = next.chargingPowerKW * (deltaSeconds / 3600);
+    const nextEnergy = clamp(next.currentBatteryEnergyKWh + deltaEnergyKWh, 0, capacity);
+    next.currentBatteryEnergyKWh = nextEnergy;
+    next.totalEnergyAddedKWh = clamp(next.totalEnergyAddedKWh + deltaEnergyKWh, 0, capacity);
+  }
+
+  next.lastUpdateTimestamp = now;
+  next.batteryPercentage = clamp((next.currentBatteryEnergyKWh / capacity) * 100, 0, 100);
+
+  if (next.batteryPercentage >= 100) {
+    next.batteryPercentage = 100;
+    next.currentBatteryEnergyKWh = capacity;
+    next.totalEnergyAddedKWh = capacity;
+    next.chargingPowerKW = 0;
+    next.chargerState = 'finished';
+  } else {
+    next.chargerState = telemetry.chargerState;
+  }
+
+  if (next.chargingStartTimestamp && (isCharging || next.chargerState === 'finished')) {
+    next.elapsedSeconds = Math.max(0, Math.round((now - next.chargingStartTimestamp) / 1000));
+  } else if (next.chargerState === 'idle' && !isCharging) {
+    next.elapsedSeconds = next.elapsedSeconds ?? 0;
+  }
+
+  return next;
 }
 
 /**
@@ -105,7 +220,11 @@ class LiveChargingStore {
   private started = false;
 
   constructor(private readonly repo: LiveChargingRepository) {
-    this.snapshot = { connectionState: repo.getConnectionState(), telemetry: null, dataWarning: false };
+    this.snapshot = {
+      connectionState: repo.getConnectionState(),
+      state: createInitialChargingState(),
+      dataWarning: false,
+    };
   }
 
   start() {
@@ -121,13 +240,15 @@ class LiveChargingStore {
     });
 
     this.unsubTelemetry = this.repo.subscribe((t) => {
-      if (!isValidTelemetry(t)) {
+      const validation = validateTelemetry(t);
+      if (!validation.usable) {
         if (!this.snapshot.dataWarning) {
           this.setSnapshot({ ...this.snapshot, dataWarning: true });
         }
         return;
       }
-      this.setSnapshot({ connectionState: this.snapshot.connectionState, telemetry: t, dataWarning: false });
+      const nextState = updateChargingState(this.snapshot.state, t, Date.now());
+      this.setSnapshot({ connectionState: this.snapshot.connectionState, state: nextState, dataWarning: validation.warning });
     });
   }
 
@@ -161,7 +282,7 @@ class LiveChargingStore {
     // Avoid needless notifications for identical snapshots.
     if (
       prev.connectionState === next.connectionState &&
-      prev.telemetry === next.telemetry &&
+      prev.state === next.state &&
       prev.dataWarning === next.dataWarning
     ) {
       return;
@@ -259,8 +380,9 @@ function SecondaryMetric({
 }
 
 function BatteryProgressRing({ store }: { store: LiveChargingStore }) {
-  const batteryPercent = useStoreSelector(store, (s) => s.telemetry?.batteryPercent ?? 0);
-  const energyWh = useStoreSelector(store, (s) => s.telemetry?.energyWh ?? 0);
+  const batteryPercent = useStoreSelector(store, (s) => s.state.batteryPercentage);
+  const energyKWh = useStoreSelector(store, (s) => s.state.totalEnergyAddedKWh);
+  const capacityKWh = useStoreSelector(store, (s) => s.state.batteryCapacityKWh);
 
   const percentText = `${batteryPercent.toFixed(0)}%`;
   const progress = clamp01(batteryPercent / 100);
@@ -314,7 +436,7 @@ function BatteryProgressRing({ store }: { store: LiveChargingStore }) {
         </View>
       </View>
       <Text style={styles.ringSub}>
-        {energyWh.toFixed(1)} Wh of {Number.isFinite(BATTERY_CAPACITY_WH) ? BATTERY_CAPACITY_WH.toFixed(1) : '—'} Wh
+        {energyKWh.toFixed(2)} kWh of {capacityKWh.toFixed(1)} kWh
       </Text>
     </View>
   );
@@ -322,13 +444,11 @@ function BatteryProgressRing({ store }: { store: LiveChargingStore }) {
 
 function ChargerStateHeader({ store }: { store: LiveChargingStore }) {
   const connectionState = useStoreSelector(store, (s) => s.connectionState);
-  const telemetry = useStoreSelector(store, (s) => s.telemetry);
+  const chargerState = useStoreSelector(store, (s) => s.state.chargerState);
   const dataWarning = useStoreSelector(store, (s) => s.dataWarning);
 
-  const uiState = deriveUiChargerState(telemetry);
-
   const stateConfig = useMemo(() => {
-    if (uiState === 'charging') {
+    if (chargerState === 'charging') {
       return {
         label: 'Charging',
         icon: 'flash',
@@ -336,7 +456,7 @@ function ChargerStateHeader({ store }: { store: LiveChargingStore }) {
         bg: 'rgba(16,185,129,0.10)',
       } as const;
     }
-    if (uiState === 'finished') {
+    if (chargerState === 'finished') {
       return {
         label: 'Finished',
         icon: 'checkmark-circle',
@@ -345,7 +465,7 @@ function ChargerStateHeader({ store }: { store: LiveChargingStore }) {
       } as const;
     }
     return { label: 'Idle', icon: 'pause', tone: theme.colors.muted, bg: theme.colors.card2 } as const;
-  }, [uiState]);
+  }, [chargerState]);
 
   const connectionLabel =
     connectionState === 'connected'
@@ -380,14 +500,13 @@ function ChargerStateHeader({ store }: { store: LiveChargingStore }) {
 
 function ChargingControls({ store }: { store: LiveChargingStore }) {
   const { chargerRepository } = useRepositories();
-  const telemetry = useStoreSelector(store, (s) => s.telemetry);
-  const uiState = deriveUiChargerState(telemetry);
+  const chargerState = useStoreSelector(store, (s) => s.state.chargerState);
 
   const [pending, setPending] = useState<'start' | 'stop' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const canStart = uiState !== 'charging' && pending == null;
-  const canStop = uiState === 'charging' && pending == null;
+  const canStart = chargerState !== 'charging' && pending == null;
+  const canStop = chargerState === 'charging' && pending == null;
 
   const onStart = async () => {
     setPending('start');
@@ -425,13 +544,11 @@ function ChargingControls({ store }: { store: LiveChargingStore }) {
 }
 
 function PrimaryPowerBlock({ store }: { store: LiveChargingStore }) {
-  const power = useStoreSelector(store, (s) => s.telemetry?.power ?? 0);
-  const voltage = useStoreSelector(store, (s) => s.telemetry?.voltage ?? 0);
-  const current = useStoreSelector(store, (s) => s.telemetry?.current ?? 0);
-  const energyWh = useStoreSelector(store, (s) => s.telemetry?.energyWh ?? 0);
-  const elapsedSeconds = useStoreSelector(store, (s) => s.telemetry?.elapsedSeconds ?? 0);
-
-  const kw = power / 1000;
+  const powerKW = useStoreSelector(store, (s) => s.state.chargingPowerKW);
+  const voltage = useStoreSelector(store, (s) => s.state.voltage);
+  const current = useStoreSelector(store, (s) => s.state.currentA);
+  const energyKWh = useStoreSelector(store, (s) => s.state.totalEnergyAddedKWh);
+  const elapsedSeconds = useStoreSelector(store, (s) => s.state.elapsedSeconds);
 
   return (
     <Card style={styles.cardShadow}>
@@ -440,9 +557,9 @@ function PrimaryPowerBlock({ store }: { store: LiveChargingStore }) {
       <View style={{ marginTop: theme.spacing.md }}>
         <Text style={styles.primaryLabel}>Power</Text>
         <View style={{ marginTop: 6 }}>
-          <ValueWithUnit valueText={power.toFixed(1)} unit="W" />
+          <ValueWithUnit valueText={powerKW.toFixed(2)} unit="kW" />
         </View>
-        <Text style={styles.speedLabel}>Charging speed ≈ {kw.toFixed(2)} kW</Text>
+        <Text style={styles.speedLabel}>Charging speed ≈ {powerKW.toFixed(2)} kW</Text>
       </View>
 
       <View style={styles.metricsRow}>
@@ -451,7 +568,7 @@ function PrimaryPowerBlock({ store }: { store: LiveChargingStore }) {
       </View>
 
       <View style={styles.metricsRow}>
-        <SecondaryMetric label="Energy" valueText={energyWh.toFixed(1)} unit="Wh" />
+        <SecondaryMetric label="Energy" valueText={energyKWh.toFixed(2)} unit="kWh" />
         <SecondaryMetric label="Time" valueText={formatDuration(elapsedSeconds)} unit="" />
       </View>
     </Card>
@@ -488,11 +605,11 @@ function PowerChartCard({ store }: { store: LiveChargingStore }) {
 
   useEffect(() => {
     const unsub = store.subscribe(() => {
-      const t = store.getSnapshot().telemetry;
-      if (!t) return;
+      const liveState = store.getSnapshot().state;
+      if (!liveState) return;
       const now = Date.now();
 
-      samplesRef.current.push({ t: now, power: t.power });
+      samplesRef.current.push({ t: now, power: liveState.chargingPowerKW });
       // Rolling window: keep only recent samples (UI only).
       samplesRef.current = samplesRef.current.filter((s) => now - s.t <= windowMs);
 

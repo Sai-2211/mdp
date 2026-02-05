@@ -16,7 +16,7 @@ export class MockBackendState {
   currentElapsedSeconds = 0;
 
   // Used only to simulate backend estimation for mock mode.
-  batteryCapacityWh = 5000;
+  batteryCapacityWh = 40000;
 
   sessions: ChargingSession[] = [
     {
@@ -72,10 +72,14 @@ export class MockBackendState {
 
   tick(): LiveChargingTelemetry {
     // Simple/consistent physics-ish simulation for UI testing.
-    const voltage = 230;
-    const baseCurrent = this.chargerState === 'charging' ? 7 + Math.sin(this.currentElapsedSeconds / 12) : 0;
-    const current = Math.max(0, baseCurrent);
-    const power = voltage * current;
+    const voltage = 380;
+    const basePowerKw =
+      this.chargerState === 'charging'
+        ? 30 + 22 * Math.sin(this.currentElapsedSeconds / 9) + 8 * Math.sin(this.currentElapsedSeconds / 4.5)
+        : 0;
+    const powerKw = Math.max(0, basePowerKw);
+    const power = powerKw * 1000;
+    const current = power / voltage;
 
     if (this.chargerState === 'charging') {
       this.currentElapsedSeconds += 1;
@@ -109,4 +113,3 @@ export class MockBackendState {
 }
 
 export const mockBackendState = new MockBackendState();
-

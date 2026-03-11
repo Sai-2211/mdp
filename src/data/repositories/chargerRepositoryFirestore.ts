@@ -22,6 +22,7 @@ export class ChargerRepositoryFirestore implements ChargerRepository {
       return { online: false, state: 'unavailable', lastUpdated: new Date() };
     }
     const data = snap.data() as Record<string, unknown>;
+    console.log('[DEBUG] Firestore device/status raw data:', JSON.stringify(data));
     const relay = data?.relay;
     const ts = data?.timestamp;
     const lastUpdated = ts && typeof (ts as any).toDate === 'function'

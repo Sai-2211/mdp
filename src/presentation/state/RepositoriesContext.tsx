@@ -68,8 +68,10 @@ export function RepositoriesProvider({ children }: { children: React.ReactNode }
       authRepository: new AuthRepositoryImpl(apiClient),
       // Charger status and relay control go directly through Firestore.
       chargerRepository: new ChargerRepositoryFirestore(),
-      sessionsRepository: new SessionsRepositoryImpl(apiClient),
-      liveChargingRepository: new LiveChargingRepositoryImpl(liveSocket),
+      
+      // MOCK OUT missing backend dependencies so they stop throwing NetworkErrors:
+      sessionsRepository: new MockSessionsRepository(),
+      liveChargingRepository: new MockLiveChargingRepository(),
     };
   }, [apiClient]);
 

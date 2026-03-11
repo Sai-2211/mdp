@@ -34,8 +34,8 @@
 // ─────────────────────────────────────────────
 //  CONFIGURATION — fill these in
 // ─────────────────────────────────────────────
-#define WIFI_SSID          "ur wife name"
-#define WIFI_PASSWORD      "ur wife password"
+#define WIFI_SSID          "Sai2211"
+#define WIFI_PASSWORD      "Sai221107"
 
 #define FIREBASE_API_KEY   "AIzaSyDKiLZx-u1aSDqOIt7nm7Lpv15rBgOvhm8"
 #define FIREBASE_PROJECT_ID "evcharger-437ad"
@@ -201,7 +201,13 @@ void pushStatus(float temperature, float voltage, float current, float power) {
   content.set("fields/current/doubleValue",     current);
   content.set("fields/power/doubleValue",       power);
   content.set("fields/relay/booleanValue",      relayState);
-  content.set("fields/timestamp/timestampValue", Firebase.getCurrentTimeString().c_str());
+  // Build ISO 8601 timestamp string (Firestore timestampValue format)
+  time_t now = time(nullptr);
+  struct tm timeinfo;
+  gmtime_r(&now, &timeinfo);
+  char timeBuf[30];
+  strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%dT%H:%M:%SZ", &timeinfo);
+  content.set("fields/timestamp/timestampValue", timeBuf);
 
   // Update device/status (live document the app dashboard reads)
   String mask = "temperature,voltage,current,power,relay,timestamp";

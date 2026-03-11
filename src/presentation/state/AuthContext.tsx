@@ -1,6 +1,6 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useMemo } from 'react';
 
-import { clearStoredSession, getStoredSession, storeSession } from '../../data/storage/sessionStorage';
+import { useAuth as useFirebaseAuth } from '../../context/AuthContext';
 
 export type AuthStatus = 'restoring' | 'authenticated' | 'unauthenticated';
 
@@ -19,39 +19,27 @@ export type AuthContextValue = {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<AuthState>({ status: 'restoring', accessToken: null, email: null });
+  const { user, loading, signOut } = useFirebaseAuth();
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const stored = await getStoredSession();
-        if (cancelled) return;
-        if (stored?.accessToken) {
-          setState({ status: 'authenticated', accessToken: stored.accessToken, email: stored.email ?? null });
-        } else {
-          setState({ status: 'unauthenticated', accessToken: null, email: null });
-        }
-      } catch {
-        if (!cancelled) setState({ status: 'unauthenticated', accessToken: null, email: null });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const state: AuthState = useMemo(
+    () => ({
+      status: loading ? 'restoring' : user ? 'authenticated' : 'unauthenticated',
+      accessToken: user ? user.uid : null,
+      email: user?.email ?? null,
+    }),
+    [loading, user],
+  );
 
-  const setSession = useCallback(async (args: { accessToken: string; email?: string }) => {
-    await storeSession({ accessToken: args.accessToken, email: args.email });
-    setState({ status: 'authenticated', accessToken: args.accessToken, email: args.email ?? null });
-  }, []);
-
-  const clearSession = useCallback(async () => {
-    await clearStoredSession();
-    setState({ status: 'unauthenticated', accessToken: null, email: null });
-  }, []);
-
-  const value = useMemo<AuthContextValue>(() => ({ state, setSession, clearSession }), [state, setSession, clearSession]);
+  const value: AuthContextValue = useMemo(
+    () => ({
+      state,
+      setSession: async () => Promise.resolve(), // legacy API no-op; Firebase handles session
+      clearSession: async () => {
+        await signOut();
+      },
+    }),
+    [state, signOut],
+  );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
@@ -61,4 +49,3 @@ export function useAuth(): AuthContextValue {
   if (!ctx) throw new Error('useAuth must be used within AuthProvider');
   return ctx;
 }
-

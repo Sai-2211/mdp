@@ -1,28 +1,22 @@
 {
   "project_info": {
-    "project_number": "553905450489",
-    "project_id": "evcharger-437ad",
-    "storage_bucket": "evcharger-437ad.firebasestorage.app"
+    "project_number": "REPLACE_ME",
+    "project_id": "REPLACE_ME",
+    "storage_bucket": "REPLACE_ME.appspot.com"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:553905450489:android:c9810bdc85a2ec44fa6128",
+        "mobilesdk_app_id": "REPLACE_ME",
         "android_client_info": {
           "package_name": "com.sai.mdp"
         }
       },
-      "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyDKiLZx-u1aSDqOIt7nm7Lpv15rBgOvhm8"
+          "current_key": "REPLACE_ME"
         }
-      ],
-      "services": {
-        "appinvite_service": {
-          "other_platform_oauth_client": []
-        }
-      }
+      ]
     }
   ],
   "configuration_version": "1"

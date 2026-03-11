@@ -34,15 +34,15 @@
 // ─────────────────────────────────────────────
 //  CONFIGURATION — fill these in
 // ─────────────────────────────────────────────
-#define WIFI_SSID          "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD      "YOUR_WIFI_PASSWORD"
+#define WIFI_SSID          "ur wife name"
+#define WIFI_PASSWORD      "ur wife password"
 
 #define FIREBASE_API_KEY   "AIzaSyDKiLZx-u1aSDqOIt7nm7Lpv15rBgOvhm8"
 #define FIREBASE_PROJECT_ID "evcharger-437ad"
 
 // Create this account in Firebase Console → Authentication → Add User
 #define DEVICE_EMAIL       "esp32-device@evcharger.com"
-#define DEVICE_PASSWORD    "YOUR_DEVICE_ACCOUNT_PASSWORD"
+#define DEVICE_PASSWORD    "esp32@evcharger"
 
 // ─────────────────────────────────────────────
 //  PINS

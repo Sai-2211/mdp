@@ -42,3 +42,5 @@ yarn-error.*
 .gradle-local/
 android/.gradle/
 android/build/
+android/
+.gradle-local/

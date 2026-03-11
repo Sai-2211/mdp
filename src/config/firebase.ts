@@ -4,12 +4,12 @@ import firestore from '@react-native-firebase/firestore';
 
 // Prefer environment variables so builds don’t require source edits.
 const firebaseConfig = {
-  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY ?? 'YOUR_API_KEY',
-  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN ?? 'YOUR_PROJECT_ID.firebaseapp.com',
-  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID ?? 'YOUR_PROJECT_ID',
-  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET ?? 'YOUR_PROJECT_ID.appspot.com',
-  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? 'YOUR_SENDER_ID',
-  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID ?? 'YOUR_APP_ID',
+  apiKey: "AIzaSyDKiLZx-u1aSDqOIt7nm7Lpv15rBgOvhm8",
+  authDomain: "evcharger-437ad.firebaseapp.com",
+  projectId: "evcharger-437ad",
+  storageBucket: "evcharger-437ad.firebasestorage.app",
+  messagingSenderId: "553905450489",
+  appId: "1:553905450489:android:c9810bdc85a2ec44fa6128",
 };
 
 const missingConfig = Object.values(firebaseConfig).some((value) => value.startsWith('YOUR_') || value.includes('PROJECT_ID'));

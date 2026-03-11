@@ -52,6 +52,7 @@
 #define RELAY_PIN    26
 #define CURRENT_PIN  34
 #define VOLTAGE_PIN  35
+#define LED_PIN      2       // Built-in LED (most ESP32 boards)
 
 // ─────────────────────────────────────────────
 //  CALIBRATION
@@ -78,8 +79,38 @@ FirebaseConfig fbConfig;
 
 unsigned long lastSensorMs  = 0;
 unsigned long lastCommandMs = 0;
+unsigned long lastLedMs     = 0;
 bool relayState = false;
 bool firebaseReady = false;
+bool ledState = false;
+
+// ─────────────────────────────────────────────
+//  LED STATUS INDICATOR
+//   Slow blink (1s)  = Trying to connect WiFi
+//   Fast blink (250ms) = WiFi OK, Firebase not ready
+//   Solid ON          = Fully connected & operational
+//   Brief flash       = Data pushed to Firestore
+// ─────────────────────────────────────────────
+void ledBlink(int intervalMs) {
+  unsigned long now = millis();
+  if (now - lastLedMs >= (unsigned long)intervalMs) {
+    lastLedMs = now;
+    ledState = !ledState;
+    digitalWrite(LED_PIN, ledState ? HIGH : LOW);
+  }
+}
+
+void ledOn()  { digitalWrite(LED_PIN, HIGH); ledState = true; }
+void ledOff() { digitalWrite(LED_PIN, LOW);  ledState = false; }
+
+void ledFlash(int count, int ms) {
+  for (int i = 0; i < count; i++) {
+    digitalWrite(LED_PIN, HIGH);
+    delay(ms);
+    digitalWrite(LED_PIN, LOW);
+    delay(ms);
+  }
+}
 
 // ─────────────────────────────────────────────
 //  WiFi
@@ -90,6 +121,8 @@ void connectWiFi() {
   Serial.print("[WiFi] Connecting");
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 40) {
+    // Slow blink while connecting to WiFi
+    ledBlink(1000);
     delay(500);
     Serial.print(".");
     attempts++;
@@ -98,8 +131,11 @@ void connectWiFi() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.print("[WiFi] Connected! IP: ");
     Serial.println(WiFi.localIP());
+    // Quick triple-flash to confirm WiFi connected
+    ledFlash(3, 150);
   } else {
     Serial.println("[WiFi] FAILED — will retry in loop");
+    ledOff();
   }
 }
 
@@ -214,6 +250,10 @@ void setup() {
   Serial.println("  EV Charger ESP32 — Starting");
   Serial.println("==============================");
 
+  // LED init
+  pinMode(LED_PIN, OUTPUT);
+  ledOff();
+
   // Sensor init
   dht.begin();
   pinMode(RELAY_PIN, OUTPUT);
@@ -236,9 +276,14 @@ void loop() {
 
   // Wait for Firebase to be ready (token obtained)
   if (!Firebase.ready()) {
+    // Fast blink: WiFi OK but Firebase still authenticating
+    ledBlink(250);
     delay(500);
     return;
   }
+
+  // Solid ON: fully connected and operational
+  ledOn();
 
   unsigned long now = millis();
 

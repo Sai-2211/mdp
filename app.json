@@ -34,6 +34,11 @@
       "@react-native-firebase/auth",
       "expo-secure-store",
       "expo-font"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "148c2dad-ee80-4a91-988b-9fcf9d63afc4"
+      }
+    }
   }
 }

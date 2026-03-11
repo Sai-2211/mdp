@@ -22,18 +22,16 @@ function AppContent() {
     return <LoginScreen />;
   }
 
-  return (
-    <SafeAreaProvider>
-      <StatusBar style="dark" />
-      <AppRoot />
-    </SafeAreaProvider>
-  );
+  return <AppRoot />;
 }
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <SafeAreaProvider>
+      <StatusBar style="dark" />
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
+    </SafeAreaProvider>
   );
 }

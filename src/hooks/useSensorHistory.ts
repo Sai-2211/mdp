@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
+import { getFirestore, collection, query, orderBy, limit, getDocs } from '@react-native-firebase/firestore';
+import { getApp } from '@react-native-firebase/app';
 
 import type { SensorData } from './useSensorData';
 
@@ -14,12 +15,14 @@ export function useSensorHistory() {
     setLoading(true);
     setError(null);
     try {
-      const snapshot = await firestore()
-        .collection('readings')
-        .orderBy('timestamp', 'desc')
-        .limit(50)
-        .get();
-      const items = snapshot.docs.map((doc) => doc.data() as SensorHistoryItem);
+      const db = getFirestore(getApp());
+      const q = query(
+        collection(db, 'readings'),
+        orderBy('timestamp', 'desc'),
+        limit(50),
+      );
+      const snapshot = await getDocs(q);
+      const items = snapshot.docs.map((d) => d.data() as SensorHistoryItem);
       setHistory(items);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Failed to load history';

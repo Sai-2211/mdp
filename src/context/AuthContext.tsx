@@ -1,5 +1,11 @@
 import React, { createContext, useCallback, useContext, useEffect, useReducer } from 'react';
-import type { FirebaseAuthTypes } from '@react-native-firebase/auth';
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut as firebaseSignOut,
+  type FirebaseAuthTypes,
+} from '@react-native-firebase/auth';
 
 import { firebaseAuth } from '../config/firebase';
 
@@ -44,7 +50,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
 
   useEffect(() => {
-    const unsub = firebaseAuth.onAuthStateChanged((user) => {
+    const unsub = onAuthStateChanged(firebaseAuth, (user) => {
       dispatch({ type: 'SET_USER', user });
     });
     return () => unsub();
@@ -53,7 +59,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signIn = useCallback(async (email: string, password: string) => {
     dispatch({ type: 'SET_LOADING', loading: true });
     try {
-      await firebaseAuth.signInWithEmailAndPassword(email, password);
+      await signInWithEmailAndPassword(firebaseAuth, email, password);
       dispatch({ type: 'SET_ERROR', error: null });
       return null;
     } catch (e: unknown) {
@@ -68,7 +74,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signUp = useCallback(async (email: string, password: string) => {
     dispatch({ type: 'SET_LOADING', loading: true });
     try {
-      await firebaseAuth.createUserWithEmailAndPassword(email, password);
+      await createUserWithEmailAndPassword(firebaseAuth, email, password);
       dispatch({ type: 'SET_ERROR', error: null });
       return null;
     } catch (e: unknown) {
@@ -83,7 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signOut = useCallback(async () => {
     dispatch({ type: 'SET_LOADING', loading: true });
     try {
-      await firebaseAuth.signOut();
+      await firebaseSignOut(firebaseAuth);
       dispatch({ type: 'SET_ERROR', error: null });
       return null;
     } catch (e: unknown) {

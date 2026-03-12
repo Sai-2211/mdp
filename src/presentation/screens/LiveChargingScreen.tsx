@@ -12,6 +12,7 @@ import { Screen } from '../components/Screen';
 import { StatusPill } from '../components/StatusPill';
 import { useRepositories } from '../state/RepositoriesContext';
 import { theme } from '../theme/theme';
+import { useSensorData } from '../../hooks/useSensorData';
 
 type UiChargerState = 'idle' | 'charging' | 'finished';
 
@@ -21,7 +22,6 @@ function envNumber(value: string | undefined, fallback: number): number {
 }
 
 const CHART_WINDOW_SECONDS = envNumber(process.env.EXPO_PUBLIC_CHART_WINDOW_SECONDS, 45);
-const CHART_SMOOTHING_SAMPLES = envNumber(process.env.EXPO_PUBLIC_CHART_SMOOTHING_N, 10);
 const BATTERY_CAPACITY_KWH = Math.max(
   0.1,
   envNumber(
@@ -501,22 +501,26 @@ function ChargerStateHeader({ store }: { store: LiveChargingStore }) {
   );
 }
 
-function ChargingControls({ store }: { store: LiveChargingStore }) {
-  const { chargerRepository } = useRepositories();
-  const chargerState = useStoreSelector(store, (s) => s.state.chargerState);
-
+function ChargingControls({ 
+  chargerState, 
+  onStart, 
+  onStop 
+}: { 
+  chargerState: UiChargerState; 
+  onStart: () => Promise<void>; 
+  onStop: () => Promise<void>; 
+}) {
   const [pending, setPending] = useState<'start' | 'stop' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const canStart = chargerState !== 'charging' && pending == null;
   const canStop = chargerState === 'charging' && pending == null;
 
-  const onStart = async () => {
+  const handleStart = async () => {
     setPending('start');
     setError(null);
     try {
-      // Charging control is performed via secure backend authorization.
-      await chargerRepository.startCharging();
+      await onStart();
     } catch (e) {
       setError(errorToMessage(e));
     } finally {
@@ -524,12 +528,11 @@ function ChargingControls({ store }: { store: LiveChargingStore }) {
     }
   };
 
-  const onStop = async () => {
+  const handleStop = async () => {
     setPending('stop');
     setError(null);
     try {
-      // Charging control is performed via secure backend authorization.
-      await chargerRepository.stopCharging();
+      await onStop();
     } catch (e) {
       setError(errorToMessage(e));
     } finally {
@@ -540,8 +543,8 @@ function ChargingControls({ store }: { store: LiveChargingStore }) {
   return (
     <View style={{ marginTop: theme.spacing.md, gap: theme.spacing.sm }}>
       {error ? <Text style={styles.controlError}>{error}</Text> : null}
-      <PrimaryButton title="Start charging" onPress={() => void onStart()} disabled={!canStart} loading={pending === 'start'} tone="dark" />
-      <PrimaryButton title="Stop charging" onPress={() => void onStop()} disabled={!canStop} loading={pending === 'stop'} tone="danger" />
+      <PrimaryButton title="Start charging" onPress={() => void handleStart()} disabled={!canStart} loading={pending === 'start'} tone="dark" />
+      <PrimaryButton title="Stop charging" onPress={() => void handleStop()} disabled={!canStop} loading={pending === 'stop'} tone="danger" />
     </View>
   );
 }
@@ -675,53 +678,27 @@ function PowerChartCard({ store }: { store: LiveChargingStore }) {
   );
 }
 
-export function LiveChargingScreen() {
-  const { liveChargingRepository, chargerRepository } = useRepositories();
-  const storeRef = useRef<LiveChargingStore | null>(null);
+  const { data, loading, error: sensorError } = useSensorData();
+  const { chargerRepository } = useRepositories();
   const autoStopInFlightRef = useRef(false);
-  const lastAutoStopKeyRef = useRef<string | null>(null);
-  if (!storeRef.current) {
-    storeRef.current = new LiveChargingStore(liveChargingRepository as any);
-  }
-  const store = storeRef.current;
+
+  // Derive all data from the Firestore sensor payload
+  const connectionState: LiveConnectionState = loading ? 'connecting' : sensorError ? 'error' : data ? 'connected' : 'disconnected';
+  const dataWarning = false;
+  const chargerState = data?.relay ? 'charging' : 'idle';
+  const batteryPercent = 0; // The prototype doesn't track EV battery state yet
+  const sessionId = null;
+  const chargingStartTimestamp = null;
+
+  // Real values from the ESP32
+  const powerKW = (data?.power ?? 0) / 1000; // ESP32 sends W, app expects kW
+  const voltage = data?.voltage ?? 0;
+  const current = data?.current ?? 0;
+  const energyKWh = 0; // Not available from instantaneous sensor data alone yet
+  const elapsedSeconds = 0;
 
   useEffect(() => {
-    store.start();
-    return () => store.stop();
-  }, [store]);
-
-  const connectionState = useStoreSelector(store, (s) => s.connectionState);
-  const batteryPercent = useStoreSelector(store, (s) => s.state.batteryPercentage);
-  const chargerState = useStoreSelector(store, (s) => s.state.chargerState);
-  const sessionId = useStoreSelector(store, (s) => s.state.sessionId);
-  const chargingStartTimestamp = useStoreSelector(store, (s) => s.state.chargingStartTimestamp);
-
-  useEffect(() => {
-    if (batteryPercent < 100) {
-      lastAutoStopKeyRef.current = null;
-    }
-  }, [batteryPercent]);
-
-  useEffect(() => {
-    if (batteryPercent < 100) return;
-    if (chargerState === 'idle') return;
-    if (autoStopInFlightRef.current) return;
-    const completionKey = sessionId ?? (chargingStartTimestamp ? `ts:${chargingStartTimestamp}` : 'no-session');
-    if (lastAutoStopKeyRef.current === completionKey) return;
-
-    autoStopInFlightRef.current = true;
-    void chargerRepository
-      .stopCharging()
-      .then(() => {
-        Alert.alert('Charging complete', 'Battery reached 100%. Charging has been stopped.');
-      })
-      .catch(() => {
-        Alert.alert('Charging complete', 'Battery reached 100%. If charging continues, tap Stop.');
-      })
-      .finally(() => {
-        autoStopInFlightRef.current = false;
-        lastAutoStopKeyRef.current = completionKey;
-      });
+    // Safety auto-stop is disabled for the prototype until energy tracking is added
   }, [batteryPercent, chargerState, sessionId, chargingStartTimestamp, chargerRepository]);
 
   return (
@@ -729,29 +706,58 @@ export function LiveChargingScreen() {
       <Card style={styles.cardShadow}>
         <View style={styles.topRow}>
           <Text style={styles.title}>Live Charging</Text>
-          <PrimaryButton
-            title="Reconnect"
-            onPress={() => store.reconnect()}
-            fullWidth={false}
-            disabled={connectionState === 'connecting'}
-          />
         </View>
 
-        <ChargerStateHeader store={store} />
+        <View style={styles.headerBlock}>
+          <View style={styles.headerTopRow}>
+            <View style={[styles.stateBadge, { 
+              backgroundColor: chargerState === 'charging' ? 'rgba(16,185,129,0.10)' : theme.colors.card2, 
+              borderColor: chargerState === 'charging' ? theme.colors.success : theme.colors.muted 
+            }]}>
+              <Ionicons name={chargerState === 'charging' ? 'flash' : 'pause'} size={18} color={chargerState === 'charging' ? theme.colors.success : theme.colors.muted} />
+              <Text style={styles.stateText}>{chargerState === 'charging' ? 'Charging' : 'Idle'}</Text>
+            </View>
+            <View style={styles.headerRight}>
+              {sensorError ? (
+                <View style={styles.warningPill}>
+                  <Ionicons name="warning" size={16} color={theme.colors.warning} />
+                  <Text style={styles.warningText}>Telemetry issue</Text>
+                </View>
+              ) : null}
+              {connectionState !== 'connected' ? <StatusPill label={connectionState} tone={connectionTone(connectionState)} /> : null}
+            </View>
+          </View>
+        </View>
 
         <View style={styles.progressRow}>
-          <BatteryProgressRing store={store} />
-          <View style={{ flex: 1 }}>
-            <ChargingControls store={store} />
+          {/* <BatteryProgressRing store={store} /> */}
+          <View style={{ flex: 1, marginTop: theme.spacing.md }}>
+            <ChargingControls 
+              chargerState={chargerState} 
+              onStart={() => chargerRepository.startCharging()} 
+              onStop={() => chargerRepository.stopCharging()} 
+            />
           </View>
         </View>
       </Card>
 
       <View style={{ marginTop: theme.spacing.md }}>
-        <PrimaryPowerBlock store={store} />
-      </View>
+         <Card style={styles.cardShadow}>
+            <Text style={styles.sectionTitle}>Live Sensors</Text>
+            <View style={{ marginTop: theme.spacing.md }}>
+              <Text style={styles.primaryLabel}>Power</Text>
+              <View style={{ marginTop: 6 }}>
+                <ValueWithUnit valueText={powerKW.toFixed(2)} unit="kW" />
+              </View>
+              <Text style={styles.speedLabel}>Charging speed ≈ {powerKW.toFixed(2)} kW</Text>
+            </View>
 
-      <PowerChartCard store={store} />
+            <View style={styles.metricsRow}>
+              <SecondaryMetric label="Voltage" valueText={voltage.toFixed(1)} unit="V" />
+              <SecondaryMetric label="Current" valueText={current.toFixed(2)} unit="A" />
+            </View>
+          </Card>
+      </View>
 
       <View style={{ marginTop: theme.spacing.lg }}>
         <Text style={styles.footnote}>Estimated values • Prototype charger</Text>

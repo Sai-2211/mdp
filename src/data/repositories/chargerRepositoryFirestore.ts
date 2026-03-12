@@ -18,16 +18,30 @@ export class ChargerRepositoryFirestore implements ChargerRepository {
 
   async getStatus(): Promise<ChargerStatus> {
     const snap = await getDoc(doc(collection(this.db, 'device'), 'status'));
-    if (!snap.exists) {
+    if (!snap.exists()) {
       return { online: false, state: 'unavailable', lastUpdated: new Date() };
     }
-    const data = snap.data() as Record<string, unknown>;
+    const data = (snap.data() || {}) as any;
     console.log('[DEBUG] Firestore device/status raw data:', JSON.stringify(data));
-    const relay = data?.relay;
-    const ts = data?.timestamp;
-    const lastUpdated = ts && typeof (ts as any).toDate === 'function'
-      ? (ts as any).toDate()
+    
+    // Helper to extract value regardless of whether it's nested (from ESP32) or flat
+    const extractValue = (field: any, expectedType: 'booleanValue' | 'timestampValue') => {
+      if (field === undefined || field === null) return undefined;
+      if (typeof field === 'object' && expectedType in field) {
+        return field[expectedType];
+      }
+      return field;
+    };
+
+    const relay = extractValue(data.relay, 'booleanValue');
+    const tsStr = extractValue(data.timestamp, 'timestampValue');
+    
+    // The ESP32 pushes an ISO string for timestamp, e.g. "2026-03-12T10:12:07Z"
+    // Or if it's a Firestore Timestamp, it has a toDate() function
+    const lastUpdated = tsStr 
+      ? (typeof tsStr === 'string' ? new Date(tsStr) : (typeof tsStr.toDate === 'function' ? tsStr.toDate() : new Date()))
       : new Date();
+
     const online = relay !== undefined;
     const state = parseState(relay);
     return { online, state, lastUpdated };

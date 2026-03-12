@@ -22,7 +22,26 @@ export function useSensorHistory() {
         limit(50),
       );
       const snapshot = await getDocs(q);
-      const items = snapshot.docs.map((d) => d.data() as SensorHistoryItem);
+      
+      const extractValue = (field: any, expectedType: 'doubleValue' | 'booleanValue' | 'timestampValue') => {
+        if (field === undefined || field === null) return undefined;
+        if (typeof field === 'object' && expectedType in field) {
+          return field[expectedType];
+        }
+        return field;
+      };
+
+      const items = snapshot.docs.map((d: any) => {
+        const raw = d.data() as any;
+        return {
+          temperature: extractValue(raw.temperature, 'doubleValue') ?? 0,
+          voltage: extractValue(raw.voltage, 'doubleValue') ?? 0,
+          current: extractValue(raw.current, 'doubleValue') ?? 0,
+          power: extractValue(raw.power, 'doubleValue') ?? 0,
+          relay: extractValue(raw.relay, 'booleanValue') ?? false,
+          timestamp: extractValue(raw.timestamp, 'timestampValue') ?? new Date(),
+        } as SensorHistoryItem;
+      });
       setHistory(items);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Failed to load history';

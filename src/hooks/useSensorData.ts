@@ -23,12 +23,33 @@ export function useSensorData() {
       doc(collection(db, 'device'), 'status'),
       (snap) => {
         setLoading(false);
-        if (!snap.exists) {
+        if (!snap.exists()) {
           setData(null);
           return;
         }
-        const payload = snap.data() as SensorData | undefined;
-        setData(payload ?? null);
+        // The ESP32 is using the REST API which nests values like { doubleValue: 25.5 }
+        // We need to unwrap these values to match the SensorData type
+        const raw = snap.data() || {};
+        
+        // Helper to extract value regardless of whether it's nested (from ESP32) or flat
+        const extractValue = (field: any, expectedType: 'doubleValue' | 'booleanValue' | 'timestampValue') => {
+          if (field === undefined || field === null) return undefined;
+          if (typeof field === 'object' && expectedType in field) {
+            return field[expectedType];
+          }
+          return field; // Fallback if it's already flat
+        };
+
+        const payload: SensorData = {
+          temperature: extractValue(raw.temperature, 'doubleValue') ?? 0,
+          voltage: extractValue(raw.voltage, 'doubleValue') ?? 0,
+          current: extractValue(raw.current, 'doubleValue') ?? 0,
+          power: extractValue(raw.power, 'doubleValue') ?? 0,
+          relay: extractValue(raw.relay, 'booleanValue') ?? false,
+          timestamp: extractValue(raw.timestamp, 'timestampValue') ?? new Date(),
+        };
+
+        setData(payload);
       },
       (err) => {
         setLoading(false);

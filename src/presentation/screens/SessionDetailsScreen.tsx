@@ -50,6 +50,8 @@ export function SessionDetailsScreen({ route }: Props) {
             }
           />
           <LabeledValue label="Stop reason" value={vm.session?.stopReason ?? '—'} />
+          <LabeledValue label="SoC" value={vm.session?.soc != null ? `${vm.session.soc.toFixed(0)}%` : '—'} />
+          <LabeledValue label="Profile" value={vm.session?.profile ?? '—'} />
         </View>
 
         <View style={{ marginTop: theme.spacing.lg }}>

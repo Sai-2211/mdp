@@ -19,8 +19,8 @@ export function useDashboardViewModel() {
   const [actionLoading, setActionLoading] = useState<'start' | 'stop' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (background = false) => {
+    if (!background) setLoading(true);
     setError(null);
     try {
       const next = await fetchChargerStatus(chargerRepository);
@@ -28,7 +28,7 @@ export function useDashboardViewModel() {
     } catch (e) {
       setError(errorToMessage(e));
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, [chargerRepository]);
 

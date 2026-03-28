@@ -4,8 +4,11 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signOut as firebaseSignOut,
+  GoogleAuthProvider,
+  signInWithCredential,
   type FirebaseAuthTypes,
 } from '@react-native-firebase/auth';
+import { GoogleSignin } from '@react-native-google-signin/google-signin';
 
 import { firebaseAuth } from '../config/firebase';
 
@@ -26,6 +29,7 @@ type AuthContextValue = {
   error: string | null;
   signIn: (email: string, password: string) => Promise<string | null>;
   signUp: (email: string, password: string) => Promise<string | null>;
+  signInWithGoogle: () => Promise<string | null>;
   signOut: () => Promise<string | null>;
 };
 
@@ -86,6 +90,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const signInWithGoogle = useCallback(async () => {
+    dispatch({ type: 'SET_LOADING', loading: true });
+    try {
+      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      const { data } = await GoogleSignin.signIn();
+      if (!data?.idToken) throw new Error('No Google ID token found');
+      const googleCredential = GoogleAuthProvider.credential(data.idToken);
+      await signInWithCredential(firebaseAuth, googleCredential);
+      dispatch({ type: 'SET_ERROR', error: null });
+      return null;
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Google Sign-in failed';
+      dispatch({ type: 'SET_ERROR', error: msg });
+      return msg;
+    } finally {
+      dispatch({ type: 'SET_LOADING', loading: false });
+    }
+  }, []);
+
   const signOut = useCallback(async () => {
     dispatch({ type: 'SET_LOADING', loading: true });
     try {
@@ -107,6 +130,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     error: state.error,
     signIn,
     signUp,
+    signInWithGoogle,
     signOut,
   };
 

@@ -15,5 +15,7 @@ export type HistoryStackParamList = {
 export type AppTabParamList = {
   DashboardTab: undefined;
   HistoryTab: undefined;
+  VehicleProfileTab: undefined;
+  SettingsTab: undefined;
   Profile: undefined;
 };

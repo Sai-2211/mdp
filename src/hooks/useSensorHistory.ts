@@ -23,7 +23,7 @@ export function useSensorHistory() {
       );
       const snapshot = await getDocs(q);
       
-      const extractValue = (field: any, expectedType: 'doubleValue' | 'booleanValue' | 'timestampValue') => {
+      const extractValue = (field: any, expectedType: 'doubleValue' | 'booleanValue' | 'timestampValue' | 'stringValue') => {
         if (field === undefined || field === null) return undefined;
         if (typeof field === 'object' && expectedType in field) {
           return field[expectedType];
@@ -40,6 +40,9 @@ export function useSensorHistory() {
           power: extractValue(raw.power, 'doubleValue') ?? 0,
           relay: extractValue(raw.relay, 'booleanValue') ?? false,
           timestamp: extractValue(raw.timestamp, 'timestampValue') ?? new Date(),
+          soc: extractValue(raw.soc, 'doubleValue') ?? 0,
+          profile: extractValue(raw.profile, 'stringValue') ?? 'car',
+          targetSoC: extractValue(raw.targetSoC, 'doubleValue') ?? 95,
         } as SensorHistoryItem;
       });
       setHistory(items);

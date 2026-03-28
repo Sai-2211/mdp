@@ -10,6 +10,9 @@ export type SensorData = {
   power: number;
   relay: boolean;
   timestamp: FirebaseFirestoreTypes.Timestamp;
+  soc: number;
+  profile: string;
+  targetSoC: number;
 };
 
 export function useSensorData() {
@@ -32,7 +35,7 @@ export function useSensorData() {
         const raw = snap.data() || {};
         
         // Helper to extract value regardless of whether it's nested (from ESP32) or flat
-        const extractValue = (field: any, expectedType: 'doubleValue' | 'booleanValue' | 'timestampValue') => {
+        const extractValue = (field: any, expectedType: 'doubleValue' | 'booleanValue' | 'timestampValue' | 'stringValue') => {
           if (field === undefined || field === null) return undefined;
           if (typeof field === 'object' && expectedType in field) {
             return field[expectedType];
@@ -47,6 +50,9 @@ export function useSensorData() {
           power: extractValue(raw.power, 'doubleValue') ?? 0,
           relay: extractValue(raw.relay, 'booleanValue') ?? false,
           timestamp: extractValue(raw.timestamp, 'timestampValue') ?? new Date(),
+          soc: extractValue(raw.soc, 'doubleValue') ?? 0,
+          profile: extractValue(raw.profile, 'stringValue') ?? 'car',
+          targetSoC: extractValue(raw.targetSoC, 'doubleValue') ?? 95,
         };
 
         setData(payload);

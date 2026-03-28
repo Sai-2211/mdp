@@ -5,5 +5,7 @@ export type ChargingSession = {
   energyWh: number;
   elapsedSeconds?: number;
   stopReason?: string;
+  soc?: number;
+  profile?: string;
 };
 

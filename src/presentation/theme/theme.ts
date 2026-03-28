@@ -1,19 +1,19 @@
 export const theme = {
   colors: {
-    // Rapido-inspired (yellow + clean light surfaces)
-    bg: '#FAFAFA',
+    // Professional Royal Blue Aesthetic
+    bg: '#F8FAFC',
     card: '#FFFFFF',
-    card2: '#F3F4F6',
-    text: '#0B1220',
-    muted: '#5B657A',
-    primary: '#F9C800',
-    onPrimary: '#0B1220',
-    dark: '#111827',
+    card2: '#F1F5F9',
+    text: '#0F172A',
+    muted: '#64748B',
+    primary: '#2563EB',
+    onPrimary: '#FFFFFF',
+    dark: '#1E293B',
     onDark: '#FFFFFF',
-    danger: '#E11D48',
+    danger: '#EF4444',
     onDanger: '#FFFFFF',
     success: '#10B981',
-    border: '#E5E7EB',
+    border: '#E2E8F0',
     warning: '#F59E0B',
   },
   spacing: {

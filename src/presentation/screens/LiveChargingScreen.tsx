@@ -22,6 +22,7 @@ function envNumber(value: string | undefined, fallback: number): number {
 }
 
 const CHART_WINDOW_SECONDS = envNumber(process.env.EXPO_PUBLIC_CHART_WINDOW_SECONDS, 45);
+const CHART_SMOOTHING_SAMPLES = envNumber(process.env.EXPO_PUBLIC_CHART_SMOOTHING_SAMPLES, 10);
 const BATTERY_CAPACITY_KWH = Math.max(
   0.1,
   envNumber(
@@ -678,6 +679,48 @@ function PowerChartCard({ store }: { store: LiveChargingStore }) {
   );
 }
 
+function LiveSoCGauge({ soc, targetSoC }: { soc: number; targetSoC: number }) {
+  const percent = clamp01(soc / 100);
+  const size = 130;
+  const stroke = 10;
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+
+  const dashOffset = useRef(new Animated.Value(c)).current;
+  useEffect(() => {
+    Animated.timing(dashOffset, {
+      toValue: c * (1 - percent),
+      duration: 350,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [c, dashOffset, percent]);
+
+  const AnimatedCircle = useMemo(() => Animated.createAnimatedComponent(Circle), []);
+
+  return (
+    <View style={{ alignItems: 'center', marginTop: 12 }}>
+      <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
+        <Svg width={size} height={size}>
+          <Circle cx={size / 2} cy={size / 2} r={r} stroke={theme.colors.border} strokeWidth={stroke} fill="none" />
+          <AnimatedCircle
+            cx={size / 2} cy={size / 2} r={r}
+            stroke={theme.colors.success} strokeWidth={stroke} strokeLinecap="round" fill="none"
+            strokeDasharray={`${c} ${c}`} strokeDashoffset={dashOffset}
+            transform={`rotate(-90 ${size / 2} ${size / 2})`}
+          />
+        </Svg>
+        <View style={{ position: 'absolute', alignItems: 'center' }}>
+          <AnimatedValueText text={`${soc.toFixed(0)}%`} style={{ color: theme.colors.text, fontWeight: '900', fontSize: 24 }} />
+          <Text style={{ color: theme.colors.muted, fontWeight: '800', fontSize: 11, marginTop: 2 }}>SoC</Text>
+        </View>
+      </View>
+      <Text style={{ color: theme.colors.muted, fontWeight: '700', marginTop: 8 }}>Target: {targetSoC.toFixed(0)}%</Text>
+    </View>
+  );
+}
+
+export function LiveChargingScreen() {
   const { data, loading, error: sensorError } = useSensorData();
   const { chargerRepository } = useRepositories();
   const autoStopInFlightRef = useRef(false);
@@ -686,7 +729,9 @@ function PowerChartCard({ store }: { store: LiveChargingStore }) {
   const connectionState: LiveConnectionState = loading ? 'connecting' : sensorError ? 'error' : data ? 'connected' : 'disconnected';
   const dataWarning = false;
   const chargerState = data?.relay ? 'charging' : 'idle';
-  const batteryPercent = 0; // The prototype doesn't track EV battery state yet
+  const soc = data?.soc ?? 0;
+  const targetSoC = data?.targetSoC ?? 95;
+  const temperature = data?.temperature ?? 0;
   const sessionId = null;
   const chargingStartTimestamp = null;
 
@@ -697,9 +742,13 @@ function PowerChartCard({ store }: { store: LiveChargingStore }) {
   const energyKWh = 0; // Not available from instantaneous sensor data alone yet
   const elapsedSeconds = 0;
 
+  // Derived banners
+  const isChargingComplete = soc >= targetSoC && !data?.relay;
+  const isOverheating = temperature > 40 && temperature !== -999;
+
   useEffect(() => {
     // Safety auto-stop is disabled for the prototype until energy tracking is added
-  }, [batteryPercent, chargerState, sessionId, chargingStartTimestamp, chargerRepository]);
+  }, [soc, chargerState, sessionId, chargingStartTimestamp, chargerRepository]);
 
   return (
     <Screen>
@@ -734,12 +783,32 @@ function PowerChartCard({ store }: { store: LiveChargingStore }) {
           <View style={{ flex: 1, marginTop: theme.spacing.md }}>
             <ChargingControls 
               chargerState={chargerState} 
-              onStart={() => chargerRepository.startCharging()} 
-              onStop={() => chargerRepository.stopCharging()} 
+              onStart={async () => { await chargerRepository.startCharging(); }} 
+              onStop={async () => { await chargerRepository.stopCharging(); }} 
             />
           </View>
         </View>
       </Card>
+
+      {/* ── SoC Gauge ── */}
+      <Card style={[styles.cardShadow, { marginTop: theme.spacing.md, alignItems: 'center' as const }]}>
+        <Text style={styles.sectionTitle}>Battery SoC</Text>
+        <LiveSoCGauge soc={soc} targetSoC={targetSoC} />
+      </Card>
+
+      {/* ── Alert Banners ── */}
+      {isChargingComplete ? (
+        <View style={[styles.bannerSuccess, { marginTop: theme.spacing.md }]}>
+          <Ionicons name="checkmark-circle" size={20} color={theme.colors.success} />
+          <Text style={styles.bannerText}>Charging Complete — Battery at {soc.toFixed(0)}%</Text>
+        </View>
+      ) : null}
+      {isOverheating ? (
+        <View style={[styles.bannerDanger, { marginTop: theme.spacing.sm }]}>
+          <Ionicons name="warning" size={20} color={theme.colors.danger} />
+          <Text style={styles.bannerText}>Temperature Warning — {temperature.toFixed(1)}°C exceeds safe limit</Text>
+        </View>
+      ) : null}
 
       <View style={{ marginTop: theme.spacing.md }}>
          <Card style={styles.cardShadow}>
@@ -835,4 +904,25 @@ const styles = StyleSheet.create({
   metricUnit: { color: theme.colors.muted, fontWeight: '800', paddingBottom: 1 },
   chartHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: theme.spacing.sm },
   footnote: { color: theme.colors.muted, fontWeight: '700' },
+  bannerSuccess: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    backgroundColor: 'rgba(16,185,129,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(16,185,129,0.35)',
+  },
+  bannerDanger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    backgroundColor: 'rgba(225,29,72,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(225,29,72,0.35)',
+  },
+  bannerText: { color: theme.colors.text, fontWeight: '800', flex: 1 },
 });

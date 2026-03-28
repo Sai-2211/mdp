@@ -6,7 +6,7 @@ import { MockAuthRepository, MockChargerRepository, MockLiveChargingRepository, 
 import { AuthRepositoryImpl } from '../../data/repositories/authRepositoryImpl';
 import { ChargerRepositoryFirestore } from '../../data/repositories/chargerRepositoryFirestore';
 import { LiveChargingRepositoryImpl } from '../../data/repositories/liveChargingRepositoryImpl';
-import { SessionsRepositoryImpl } from '../../data/repositories/sessionsRepositoryImpl';
+import { SessionsRepositoryFirestore } from '../../data/repositories/sessionsRepositoryFirestore';
 import { LiveChargingSocket } from '../../data/ws/liveChargingSocket';
 import type { AuthRepository } from '../../domain/repositories/authRepository';
 import type { ChargerRepository } from '../../domain/repositories/chargerRepository';
@@ -69,8 +69,11 @@ export function RepositoriesProvider({ children }: { children: React.ReactNode }
       // Charger status and relay control go directly through Firestore.
       chargerRepository: new ChargerRepositoryFirestore(),
       
-      // MOCK OUT missing backend dependencies so they stop throwing NetworkErrors:
-      sessionsRepository: new MockSessionsRepository(),
+      // Sessions go directly through Firestore.
+      sessionsRepository: new SessionsRepositoryFirestore(),
+      
+      // MOCK OUT LiveCharging so it doesn't crash from missing WebSocket. 
+      // We will phase this out and rely solely on useSensorData.
       liveChargingRepository: new MockLiveChargingRepository(),
     };
   }, [apiClient]);

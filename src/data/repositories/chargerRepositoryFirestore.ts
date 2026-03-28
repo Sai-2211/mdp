@@ -4,6 +4,10 @@ import { getApp } from '@react-native-firebase/app';
 import type { ChargerRepository, StartChargingResult } from '../../domain/repositories/chargerRepository';
 import type { ChargerState, ChargerStatus } from '../../domain/entities/charger';
 
+// We store the current "active" session document ID in-memory so stopCharging can find it.
+// In a robust implementation, this would be retrieved from local storage or queried.
+let activeSessionId: string | null = null;
+
 function parseState(value: unknown): ChargerState {
   if (typeof value !== 'boolean' && typeof value !== 'string') return 'unavailable';
   // relay field: true → charging, false → idle
@@ -48,19 +52,46 @@ export class ChargerRepositoryFirestore implements ChargerRepository {
   }
 
   async startCharging(): Promise<StartChargingResult> {
+    // 1. Signal ESP32 to start
     await setDoc(
       doc(collection(this.db, 'device'), 'command'),
       { relay: true },
       { merge: true },
     );
-    return {};
+
+    // 2. Track a new session
+    const sessionsRef = collection(this.db, 'charging_sessions');
+    const newSessionRef = doc(sessionsRef);
+    await setDoc(newSessionRef, {
+      startTime: new Date(),
+      energyWh: 0,
+      status: 'in_progress'
+    });
+    activeSessionId = newSessionRef.id;
+
+    return { sessionId: newSessionRef.id };
   }
 
   async stopCharging(): Promise<void> {
+    // 1. Signal ESP32 to stop
     await setDoc(
       doc(collection(this.db, 'device'), 'command'),
       { relay: false },
       { merge: true },
     );
+
+    // 2. Terminate tracked session
+    if (activeSessionId) {
+      await setDoc(
+        doc(collection(this.db, 'charging_sessions'), activeSessionId),
+        { 
+          endTime: new Date(), 
+          status: 'completed',
+          stopReason: 'user_stop'
+        },
+        { merge: true }
+      );
+      activeSessionId = null;
+    }
   }
 }

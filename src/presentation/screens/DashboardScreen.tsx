@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View, Dimensions } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { useFocusEffect } from '@react-navigation/native';
+import { LineChart } from 'react-native-chart-kit';
+import { Ionicons } from '@expo/vector-icons';
 
 import { appConfig } from '../../config/appConfig';
 import { energyWhToKwh, estimateChargingCost, formatMoney } from '../../core/cost';
@@ -14,8 +16,9 @@ import { Screen } from '../components/Screen';
 import { StatusPill } from '../components/StatusPill';
 import { theme } from '../theme/theme';
 import { useDashboardViewModel } from '../viewModels/useDashboardViewModel';
-import { useLiveChargingViewModel } from '../viewModels/useLiveChargingViewModel';
 import { useRecentSessionsViewModel } from '../viewModels/useRecentSessionsViewModel';
+import { useSensorData } from '../../hooks/useSensorData';
+import { useAuth } from '../../context/AuthContext';
 
 function envNumber(value: string | undefined, fallback: number): number {
   const n = Number(value);
@@ -141,13 +144,231 @@ function ChargingProgressRing({ batteryPercent, energyWh }: { batteryPercent: nu
   );
 }
 
+function profileIcon(id: string): any {
+  switch (id) {
+    case 'scooter': return 'bicycle';
+    case 'bike':    return 'bicycle-outline';
+    case 'car':     return 'car-sport';
+    case 'truck':   return 'bus';
+    default:        return 'car-sport';
+  }
+}
+
+function profileName(id: string): string {
+  switch (id) {
+    case 'scooter': return 'Scooter';
+    case 'bike':    return 'Bike';
+    case 'car':     return 'Car';
+    case 'truck':   return 'Truck';
+    default:        return id.charAt(0).toUpperCase() + id.slice(1);
+  }
+}
+
+function deriveChargingStatus(relay: boolean, soc: number, targetSoC: number): { label: string; tone: 'success' | 'muted' | 'warning' } {
+  if (relay) return { label: 'Charging', tone: 'success' };
+  if (soc >= targetSoC) return { label: 'Complete', tone: 'warning' };
+  return { label: 'Idle', tone: 'muted' };
+}
+
+function SoCCard({ sensorData }: { sensorData: import('../../hooks/useSensorData').SensorData | null }) {
+  const soc = sensorData?.soc ?? 0;
+  const profile = sensorData?.profile ?? 'car';
+  const targetSoC = sensorData?.targetSoC ?? 95;
+  const relay = sensorData?.relay ?? false;
+
+  const status = deriveChargingStatus(relay, soc, targetSoC);
+  const percent = clamp01(soc / 100);
+
+  const size = 180; // Bigger centered ring
+  const stroke = 14;
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+
+  const dashOffset = useRef(new Animated.Value(c)).current;
+  useEffect(() => {
+    Animated.timing(dashOffset, {
+      toValue: c * (1 - percent),
+      duration: 400,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [c, dashOffset, percent]);
+
+  const AnimatedCircle = useMemo(() => Animated.createAnimatedComponent(Circle), []);
+
+  return (
+    <Card style={{ alignItems: 'center', paddingVertical: theme.spacing.xl, ...styles.socCard }}>
+      
+      {/* Centered Dial */}
+      <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center', marginBottom: theme.spacing.lg }}>
+        <Svg width={size} height={size}>
+          <Circle cx={size / 2} cy={size / 2} r={r} stroke={theme.colors.border} strokeWidth={stroke} fill="none" />
+          <AnimatedCircle
+            cx={size / 2} cy={size / 2} r={r}
+            stroke={theme.colors.success} strokeWidth={stroke} strokeLinecap="round" fill="none"
+            strokeDasharray={`${c} ${c}`} strokeDashoffset={dashOffset}
+            transform={`rotate(-90 ${size / 2} ${size / 2})`}
+          />
+        </Svg>
+        <View style={{ position: 'absolute', alignItems: 'center' }}>
+          <AnimatedValueText text={`${soc.toFixed(0)}%`} style={{ color: theme.colors.text, fontWeight: '900', fontSize: 36 }} />
+          <Text style={{ color: theme.colors.muted, fontWeight: '800', marginTop: 2, fontSize: 13 }}>STATE OF CHARGE</Text>
+        </View>
+      </View>
+
+      {/* Prominent Profile Badge */}
+      <View style={{ 
+        flexDirection: 'row', alignItems: 'center', backgroundColor: theme.colors.card2, 
+        paddingHorizontal: 20, paddingVertical: 12, borderRadius: 16, gap: 12, marginBottom: 16 
+      }}>
+        <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(37,99,235,0.1)', alignItems: 'center', justifyContent: 'center' }}>
+          <Ionicons name={profileIcon(profile)} size={20} color={theme.colors.primary} />
+        </View>
+        <View>
+          <Text style={{ color: theme.colors.text, fontWeight: '900', fontSize: 16 }}>{profileName(profile)}</Text>
+          <Text style={{ color: theme.colors.muted, fontWeight: '800', fontSize: 13 }}>Target: {targetSoC.toFixed(0)}%</Text>
+        </View>
+      </View>
+      
+      {/* Status Pill */}
+      <StatusPill label={status.label} tone={status.tone} />
+      
+    </Card>
+  );
+}
+
+function ChargingControlCard({
+  state,
+  online,
+  loading,
+  onStart,
+  onStop,
+  canStart,
+  canStop,
+}: {
+  state: string;
+  online: boolean;
+  loading: 'start' | 'stop' | null;
+  onStart: () => void;
+  onStop: () => void;
+  canStart: boolean;
+  canStop: boolean;
+}) {
+  const isCharging = state === 'charging';
+  
+  const handlePress = () => {
+    if (isCharging && canStop) {
+      onStop();
+    } else if (!isCharging && canStart) {
+      onStart();
+    }
+  };
+
+  const disabled = (!isCharging && !canStart) || (isCharging && !canStop);
+  const isActionLoading = loading !== null;
+
+  return (
+    <Card style={{ padding: 0, overflow: 'hidden', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 20, shadowOffset: { width: 0, height: 8 }, elevation: 4 }}>
+      <Pressable 
+        onPress={handlePress} 
+        disabled={disabled || isActionLoading}
+        style={({ pressed }) => [
+          { padding: theme.spacing.xl, alignItems: 'center', justifyContent: 'center' },
+          isCharging ? { backgroundColor: theme.colors.danger } : { backgroundColor: theme.colors.primary },
+          pressed && { opacity: 0.85 },
+          disabled && { backgroundColor: theme.colors.card2 }
+        ]}
+      >
+        {isActionLoading ? (
+          <ActivityIndicator color={isCharging ? '#fff' : '#fff'} size="large" />
+        ) : (
+          <View style={{ alignItems: 'center', gap: 8 }}>
+            <View style={{ 
+              width: 56, height: 56, borderRadius: 28, 
+              backgroundColor: disabled ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.2)', 
+              alignItems: 'center', justifyContent: 'center'
+            }}>
+              <Ionicons 
+                name={isCharging ? "stop" : "flash"} 
+                size={28} 
+                color={disabled ? theme.colors.muted : '#fff'} 
+              />
+            </View>
+            <Text style={{ 
+              color: disabled ? theme.colors.muted : '#fff', 
+              fontSize: 18, fontWeight: '900', letterSpacing: 0.5 
+            }}>
+              {isCharging ? 'STOP CHARGING' : online ? 'START CHARGING' : 'CHARGER OFFLINE'}
+            </Text>
+          </View>
+        )}
+      </Pressable>
+    </Card>
+  );
+}
+
+function PowerChartCard({ sensorData }: { sensorData: import('../../hooks/useSensorData').SensorData | null }) {
+  const chartWidth = Dimensions.get('window').width - theme.spacing.md * 4 - 2;
+  const powerKW = (sensorData?.power ?? 0) / 1000;
+  
+  const [data, setData] = useState<{ labels: string[]; datasets: { data: number[] }[] }>({
+    labels: [''],
+    datasets: [{ data: [0] }],
+  });
+  
+  useEffect(() => {
+    setData((prev) => {
+      const newData = [...prev.datasets[0].data, powerKW].slice(-15);
+      return { labels: newData.map(() => ''), datasets: [{ data: newData.length ? newData : [0] }] };
+    });
+  }, [powerKW]);
+
+  return (
+    <Card style={styles.socCard}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Text style={{ color: theme.colors.text, fontWeight: '900', fontSize: 16 }}>Power Delivery</Text>
+        <Text style={{ color: theme.colors.primary, fontWeight: '800' }}>{powerKW.toFixed(2)} kW</Text>
+      </View>
+      <View style={{ marginTop: theme.spacing.sm }}>
+        <LineChart
+          data={data}
+          width={chartWidth}
+          height={160}
+          withDots={false}
+          withInnerLines={false}
+          withOuterLines={false}
+          withVerticalLabels={false}
+          withHorizontalLabels={false}
+          chartConfig={{
+            backgroundGradientFrom: theme.colors.card2,
+            backgroundGradientTo: theme.colors.card2,
+            decimalPlaces: 1,
+            color: (opacity = 1) => `rgba(17,24,39,${Math.min(0.65, opacity)})`,
+            labelColor: () => 'rgba(0,0,0,0)',
+            fillShadowGradient: theme.colors.primary,
+            fillShadowGradientOpacity: 0.12,
+            strokeWidth: 3,
+            propsForBackgroundLines: { stroke: theme.colors.border },
+          }}
+          bezier
+          style={{ borderRadius: theme.radius.md }}
+        />
+      </View>
+    </Card>
+  );
+}
+
 export function DashboardScreen() {
+  const { user } = useAuth();
+  const username = user?.displayName?.split(' ')[0] || user?.email?.split('@')[0] || 'User';
+  const greeting = `Hi ${username.charAt(0).toUpperCase() + username.slice(1)},`;
+
   const vm = useDashboardViewModel();
-  const live = useLiveChargingViewModel({ autoConnect: true });
   const recent = useRecentSessionsViewModel({ limit: 3 });
   const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoStopInFlightRef = useRef(false);
   const lastAutoStopSessionRef = useRef<string | null>(null);
+  const { data: sensorData } = useSensorData();
 
   const canStart = useMemo(() => {
     if (!vm.status) return false;
@@ -170,9 +391,9 @@ export function DashboardScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      // Keep charger status reasonably fresh on the dashboard.
+      // Keep charger status reasonably fresh on the dashboard silently.
       if (!refreshTimer.current) {
-        refreshTimer.current = setInterval(() => void vm.refresh(), 5000);
+        refreshTimer.current = setInterval(() => void vm.refresh(true), 5000);
       }
       return () => {
         if (refreshTimer.current) {
@@ -189,10 +410,8 @@ export function DashboardScreen() {
   const stateTone: 'success' | 'warning' | 'muted' =
     vm.status?.state === 'charging' ? 'success' : vm.status?.state === 'unavailable' ? 'warning' : 'muted';
 
-  const latest = live.latest;
-  const batteryPercent = latest?.batteryPercent;
-  const sessionId = latest?.sessionId;
-  const liveChargerState = latest?.chargerState;
+  const batteryPercent = sensorData?.soc ?? 0;
+  const liveChargerState = sensorData?.relay ? 'charging' : 'idle';
 
   useEffect(() => {
     if (batteryPercent != null && batteryPercent < 100) {
@@ -204,7 +423,7 @@ export function DashboardScreen() {
     if (batteryPercent == null || batteryPercent < 100) return;
     if (liveChargerState !== 'charging') return;
     if (autoStopInFlightRef.current) return;
-    const completionKey = sessionId ?? 'no-session';
+    const completionKey = 'done';
     if (lastAutoStopSessionRef.current === completionKey) return;
 
     autoStopInFlightRef.current = true;
@@ -220,20 +439,16 @@ export function DashboardScreen() {
         autoStopInFlightRef.current = false;
         lastAutoStopSessionRef.current = completionKey;
       });
-  }, [batteryPercent, liveChargerState, sessionId, vm.stop]);
-
-  const currentCost = latest
-    ? formatMoney({
-        amount: estimateChargingCost({ energyWh: latest.energyWh, costPerKwh: appConfig.costPerKwh }),
-        currencySymbol: appConfig.currencySymbol,
-      })
-    : '—';
+  }, [batteryPercent, liveChargerState, vm.stop]);
 
   return (
     <Screen>
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={styles.container}>
         <View style={styles.headerRow}>
-          <Text style={styles.h1}>Mini EV Charger</Text>
+          <View>
+            <Text style={{ color: theme.colors.primary, fontWeight: '900', fontSize: 28, letterSpacing: -0.5, marginBottom: 2 }}>{greeting}</Text>
+            <Text style={{ color: theme.colors.muted, fontWeight: '800', fontSize: 13, letterSpacing: 1.5 }}>EV CHARGER</Text>
+          </View>
           <Pressable onPress={() => void vm.refresh()} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
             <Text style={styles.refresh}>{vm.loading ? 'Refreshing…' : 'Refresh'}</Text>
           </Pressable>
@@ -242,70 +457,32 @@ export function DashboardScreen() {
         {vm.backendMode === 'mock' ? <Text style={styles.mock}>Mock mode enabled</Text> : null}
         {vm.error ? <ErrorBanner message={vm.error} /> : null}
 
-        <View style={styles.hero}>
-          <View style={styles.heroTop}>
-            <View style={styles.heroPills}>
-              <StatusPill label={onlineLabel} tone={onlineTone} />
-              <StatusPill label={stateLabel} tone={stateTone} />
-            </View>
-            {vm.loading ? <ActivityIndicator color={theme.colors.onPrimary} /> : null}
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+          <View style={styles.heroPills}>
+            <StatusPill label={onlineLabel} tone={onlineTone} />
+            {vm.loading ? <ActivityIndicator size="small" color={theme.colors.primary} /> : null}
           </View>
-
-          <Text style={styles.heroSub}>Last updated: {vm.status ? formatDateTime(vm.status.lastUpdated) : '—'}</Text>
-          <Text style={styles.heroNote}>Charging control is performed via secure backend authorization.</Text>
-
-          <View style={{ marginTop: theme.spacing.md, gap: theme.spacing.sm }}>
-            <PrimaryButton
-              title="Start Charging"
-              onPress={async () => {
-                await vm.start();
-                await recent.refresh();
-              }}
-              disabled={!canStart}
-              loading={vm.actionLoading === 'start'}
-              tone="dark"
-            />
-            <PrimaryButton
-              title="Stop Charging"
-              onPress={async () => {
-                await vm.stop();
-                await recent.refresh();
-              }}
-              disabled={!canStop}
-              loading={vm.actionLoading === 'stop'}
-              tone="danger"
-            />
-  	        </View>
-  	      </View>
-
-        <ChargingProgressRing batteryPercent={latest?.batteryPercent ?? 0} energyWh={latest?.energyWh ?? 0} />
-
-  	      <Card>
-  	        <View style={styles.sectionHeader}>
-  	          <Text style={styles.sectionTitle}>Live Monitoring</Text>
-  	          <View style={styles.sectionHeaderRight}>
-  	            <StatusPill label={`WS: ${live.connectionState}`} tone={connectionTone(live.connectionState)} />
-  	          </View>
-  	        </View>
-
-          <Text style={styles.sectionHint}>
-            Rate: {appConfig.currencySymbol}
-            {appConfig.costPerKwh.toFixed(2)}/kWh
+          <Text style={{ color: theme.colors.muted, fontWeight: '700', fontSize: 12 }}>
+            {vm.status ? formatDateTime(vm.status.lastUpdated) : '—'}
           </Text>
+        </View>
 
-  	          <View style={styles.grid}>
-  	            <MetricTile label="Voltage" value={latest ? `${latest.voltage.toFixed(1)} V` : '—'} />
-  	            <MetricTile label="Current" value={latest ? `${latest.current.toFixed(2)} A` : '—'} />
-  	            <MetricTile label="Power" value={latest ? `${latest.power.toFixed(0)} W` : '—'} />
-  	            <MetricTile label="Energy" value={latest ? `${energyWhToKwh(latest.energyWh).toFixed(2)} kWh` : '—'} />
-  	            <MetricTile label="Battery" value={latest ? `${latest.batteryPercent.toFixed(0)}%` : '—'} />
-  	            <MetricTile label="Elapsed" value={latest ? formatDuration(latest.elapsedSeconds) : '—'} />
-  	            <MetricTile label="Session" value={latest?.sessionId ? latest.sessionId : '—'} hint="Backend session id" />
-  	            <MetricTile label="Cost (est)" value={currentCost} hint="Based on energy received" />
-  	          </View>
-  	      </Card>
+        {/* ── Charging Control Action (Modular) ── */}
+        <ChargingControlCard 
+          state={vm.status?.state ?? 'offline'}
+          online={vm.status?.online ?? false}
+          loading={vm.actionLoading}
+          onStart={async () => { await vm.start(); await recent.refresh(); }}
+          onStop={async () => { await vm.stop(); await recent.refresh(); }}
+          canStart={canStart}
+          canStop={canStop}
+        />
 
-  	      <Card>
+        {/* ── SoC, Profile, Current Power ── */}
+        <SoCCard sensorData={sensorData} />
+        <PowerChartCard sensorData={sensorData} />
+
+        <Card>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Recent Sessions</Text>
             <Pressable onPress={() => void recent.refresh()} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
@@ -404,4 +581,17 @@ const styles = StyleSheet.create({
   sessionTitle: { color: theme.colors.text, fontWeight: '900' },
   sessionSub: { color: theme.colors.muted, fontWeight: '800', marginTop: 4 },
   sessionMeta: { color: theme.colors.muted, fontWeight: '700', marginTop: 4 },
+  socCard: {
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
+  },
+  socCardRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.lg },
+  socPercent: { color: theme.colors.text, fontWeight: '900', fontSize: 22 },
+  socCaption: { color: theme.colors.muted, fontWeight: '800', marginTop: 2, fontSize: 12 },
+  socInfoRow: { flexDirection: 'row', justifyContent: 'space-between', gap: theme.spacing.sm },
+  socInfoLabel: { color: theme.colors.muted, fontWeight: '800', fontSize: 13 },
+  socInfoValue: { color: theme.colors.text, fontWeight: '900', fontSize: 13 },
 });

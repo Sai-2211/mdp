@@ -14,6 +14,7 @@ export function DashboardStack() {
         headerStyle: { backgroundColor: theme.colors.bg },
         headerTintColor: theme.colors.text,
         headerShadowVisible: false,
+        headerShown: false,
         contentStyle: { backgroundColor: theme.colors.bg },
       }}
     >

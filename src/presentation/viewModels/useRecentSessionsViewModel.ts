@@ -18,8 +18,8 @@ export function useRecentSessionsViewModel({ limit }: { limit: number }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (background = false) => {
+    if (!background) setLoading(true);
     setError(null);
     try {
       const all = await listSessions(sessionsRepository);
@@ -27,7 +27,7 @@ export function useRecentSessionsViewModel({ limit }: { limit: number }) {
     } catch (e) {
       setError(errorToMessage(e));
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, [limit, sessionsRepository]);
 

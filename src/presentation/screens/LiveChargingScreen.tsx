@@ -23,12 +23,9 @@ function envNumber(value: string | undefined, fallback: number): number {
 
 const CHART_WINDOW_SECONDS = envNumber(process.env.EXPO_PUBLIC_CHART_WINDOW_SECONDS, 45);
 const CHART_SMOOTHING_SAMPLES = envNumber(process.env.EXPO_PUBLIC_CHART_SMOOTHING_SAMPLES, 10);
-const BATTERY_CAPACITY_KWH = Math.max(
-  0.1,
-  envNumber(
-    process.env.EXPO_PUBLIC_BATTERY_CAPACITY_KWH,
-    envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 5000) / 1000,
-  ),
+const BATTERY_CAPACITY_WH = Math.max(
+  100,
+  envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 5000),
 );
 // Indian AC001-style home charger default (≈3.3 kW). Override via env if needed.
 const MAX_CHARGING_POWER_KW = Math.max(0.1, envNumber(process.env.EXPO_PUBLIC_MAX_CHARGING_POWER_KW, 3.3));
@@ -56,12 +53,12 @@ type LiveChargingRepository = {
 };
 
 type LiveChargingState = {
-  batteryCapacityKWh: number;
-  currentBatteryEnergyKWh: number;
+  batteryCapacityWh: number;
+  currentBatteryEnergyWh: number;
   chargingPowerKW: number;
   chargingStartTimestamp: number | null;
   lastUpdateTimestamp: number | null;
-  totalEnergyAddedKWh: number;
+  totalEnergyAddedWh: number;
   batteryPercentage: number;
   elapsedSeconds: number;
   voltage: number;
@@ -121,12 +118,12 @@ function validateTelemetry(t: LiveChargingTelemetry): { usable: boolean; warning
 
 function createInitialChargingState(): LiveChargingState {
   return {
-    batteryCapacityKWh: BATTERY_CAPACITY_KWH,
-    currentBatteryEnergyKWh: 0,
+    batteryCapacityWh: BATTERY_CAPACITY_WH,
+    currentBatteryEnergyWh: 0,
     chargingPowerKW: 0,
     chargingStartTimestamp: null,
     lastUpdateTimestamp: null,
-    totalEnergyAddedKWh: 0,
+    totalEnergyAddedWh: 0,
     batteryPercentage: 0,
     elapsedSeconds: 0,
     voltage: 0,
@@ -141,7 +138,7 @@ function updateChargingState(
   telemetry: LiveChargingTelemetry,
   now: number,
 ): LiveChargingState {
-  const capacity = Math.max(0.1, prev.batteryCapacityKWh);
+  const capacity = Math.max(0.1, prev.batteryCapacityWh);
   const isCharging = telemetry.chargerState === 'charging';
   const rawPowerKW = Math.max(0, telemetry.power) / 1000;
   const powerKW = clamp(rawPowerKW, 0, MAX_CHARGING_POWER_KW);
@@ -162,8 +159,8 @@ function updateChargingState(
     // Reset charging state on new session.
     next = {
       ...next,
-      currentBatteryEnergyKWh: 0,
-      totalEnergyAddedKWh: 0,
+      currentBatteryEnergyWh: 0,
+      totalEnergyAddedWh: 0,
       batteryPercentage: 0,
       elapsedSeconds: 0,
       chargingStartTimestamp: now,
@@ -182,19 +179,19 @@ function updateChargingState(
 
   if (isCharging && next.chargingPowerKW > 0 && next.batteryPercentage < 100 && deltaSeconds > 0) {
     // Integration: convert power to energy using elapsed time in hours.
-    const deltaEnergyKWh = next.chargingPowerKW * (deltaSeconds / 3600);
-    const nextEnergy = clamp(next.currentBatteryEnergyKWh + deltaEnergyKWh, 0, capacity);
-    next.currentBatteryEnergyKWh = nextEnergy;
-    next.totalEnergyAddedKWh = clamp(next.totalEnergyAddedKWh + deltaEnergyKWh, 0, capacity);
+    const deltaEnergyWh = next.chargingPowerKW * (deltaSeconds / 3600) * 1000;
+    const nextEnergy = clamp(next.currentBatteryEnergyWh + deltaEnergyWh, 0, capacity);
+    next.currentBatteryEnergyWh = nextEnergy;
+    next.totalEnergyAddedWh = clamp(next.totalEnergyAddedWh + deltaEnergyWh, 0, capacity);
   }
 
   next.lastUpdateTimestamp = now;
-  next.batteryPercentage = clamp((next.currentBatteryEnergyKWh / capacity) * 100, 0, 100);
+  next.batteryPercentage = clamp((next.currentBatteryEnergyWh / capacity) * 100, 0, 100);
 
   if (next.batteryPercentage >= 100) {
     next.batteryPercentage = 100;
-    next.currentBatteryEnergyKWh = capacity;
-    next.totalEnergyAddedKWh = capacity;
+    next.currentBatteryEnergyWh = capacity;
+    next.totalEnergyAddedWh = capacity;
     next.chargingPowerKW = 0;
     next.chargerState = 'finished';
   } else {
@@ -385,8 +382,8 @@ function SecondaryMetric({
 
 function BatteryProgressRing({ store }: { store: LiveChargingStore }) {
   const batteryPercent = useStoreSelector(store, (s) => s.state.batteryPercentage);
-  const energyKWh = useStoreSelector(store, (s) => s.state.totalEnergyAddedKWh);
-  const capacityKWh = useStoreSelector(store, (s) => s.state.batteryCapacityKWh);
+  const energyWh = useStoreSelector(store, (s) => s.state.totalEnergyAddedWh);
+  const capacityWh = useStoreSelector(store, (s) => s.state.batteryCapacityWh);
 
   const percentText = `${batteryPercent.toFixed(0)}%`;
   const progress = clamp01(batteryPercent / 100);
@@ -440,7 +437,7 @@ function BatteryProgressRing({ store }: { store: LiveChargingStore }) {
         </View>
       </View>
       <Text style={styles.ringSub}>
-        {energyKWh.toFixed(2)} kWh of {capacityKWh.toFixed(1)} kWh
+        {energyWh.toFixed(2)} Wh of {capacityWh.toFixed(0)} Wh
       </Text>
     </View>
   );
@@ -554,7 +551,7 @@ function PrimaryPowerBlock({ store }: { store: LiveChargingStore }) {
   const powerKW = useStoreSelector(store, (s) => s.state.chargingPowerKW);
   const voltage = useStoreSelector(store, (s) => s.state.voltage);
   const current = useStoreSelector(store, (s) => s.state.currentA);
-  const energyKWh = useStoreSelector(store, (s) => s.state.totalEnergyAddedKWh);
+  const energyWh = useStoreSelector(store, (s) => s.state.totalEnergyAddedWh);
   const elapsedSeconds = useStoreSelector(store, (s) => s.state.elapsedSeconds);
 
   return (
@@ -564,9 +561,9 @@ function PrimaryPowerBlock({ store }: { store: LiveChargingStore }) {
       <View style={{ marginTop: theme.spacing.md }}>
         <Text style={styles.primaryLabel}>Power</Text>
         <View style={{ marginTop: 6 }}>
-          <ValueWithUnit valueText={powerKW.toFixed(2)} unit="kW" />
+          <ValueWithUnit valueText={powerKW.toFixed(0)} unit="W" />
         </View>
-        <Text style={styles.speedLabel}>Charging speed ≈ {powerKW.toFixed(2)} kW</Text>
+        <Text style={styles.speedLabel}>Charging speed ≈ {powerKW.toFixed(0)} W</Text>
       </View>
 
       <View style={styles.metricsRow}>
@@ -575,7 +572,7 @@ function PrimaryPowerBlock({ store }: { store: LiveChargingStore }) {
       </View>
 
       <View style={styles.metricsRow}>
-        <SecondaryMetric label="Energy" valueText={energyKWh.toFixed(2)} unit="kWh" />
+        <SecondaryMetric label="Energy" valueText={(powerKW).toFixed(2)} unit="Wh" />
         <SecondaryMetric label="Time" valueText={formatDuration(elapsedSeconds)} unit="" />
       </View>
     </Card>
@@ -711,11 +708,11 @@ function LiveSoCGauge({ soc, targetSoC }: { soc: number; targetSoC: number }) {
           />
         </Svg>
         <View style={{ position: 'absolute', alignItems: 'center' }}>
-          <AnimatedValueText text={`${soc.toFixed(0)}%`} style={{ color: theme.colors.text, fontWeight: '900', fontSize: 24 }} />
+          <AnimatedValueText text={`${soc.toFixed(1)}%`} style={{ color: theme.colors.text, fontWeight: '900', fontSize: 24 }} />
           <Text style={{ color: theme.colors.muted, fontWeight: '800', fontSize: 11, marginTop: 2 }}>SoC</Text>
         </View>
       </View>
-      <Text style={{ color: theme.colors.muted, fontWeight: '700', marginTop: 8 }}>Target: {targetSoC.toFixed(0)}%</Text>
+      <Text style={{ color: theme.colors.muted, fontWeight: '700', marginTop: 8 }}>Target: {targetSoC.toFixed(1)}%</Text>
     </View>
   );
 }
@@ -736,10 +733,10 @@ export function LiveChargingScreen() {
   const chargingStartTimestamp = null;
 
   // Real values from the ESP32
-  const powerKW = (data?.power ?? 0) / 1000; // ESP32 sends W, app expects kW
+  const powerKW = data?.power ?? 0; // ESP32 sends W, app expects Watts visually now
   const voltage = data?.voltage ?? 0;
   const current = data?.current ?? 0;
-  const energyKWh = 0; // Not available from instantaneous sensor data alone yet
+  const energyWh = 0; // Not available from instantaneous sensor data alone yet
   const elapsedSeconds = 0;
 
   // Derived banners

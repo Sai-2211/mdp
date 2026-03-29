@@ -13,6 +13,9 @@ export type SensorData = {
   soc: number;
   profile: string;
   targetSoC: number;
+  stopReason: string;
+  energyWh: number;
+  elapsedSeconds: number;
 };
 
 export function useSensorData() {
@@ -35,7 +38,7 @@ export function useSensorData() {
         const raw = snap.data() || {};
         
         // Helper to extract value regardless of whether it's nested (from ESP32) or flat
-        const extractValue = (field: any, expectedType: 'doubleValue' | 'booleanValue' | 'timestampValue' | 'stringValue') => {
+        const extractValue = (field: any, expectedType: 'doubleValue' | 'booleanValue' | 'timestampValue' | 'stringValue' | 'integerValue') => {
           if (field === undefined || field === null) return undefined;
           if (typeof field === 'object' && expectedType in field) {
             return field[expectedType];
@@ -53,6 +56,9 @@ export function useSensorData() {
           soc: extractValue(raw.soc, 'doubleValue') ?? 0,
           profile: extractValue(raw.profile, 'stringValue') ?? 'car',
           targetSoC: extractValue(raw.targetSoC, 'doubleValue') ?? 95,
+          stopReason: extractValue(raw.stopReason, 'stringValue') ?? 'none',
+          energyWh: extractValue(raw.energyWh, 'doubleValue') ?? 0,
+          elapsedSeconds: extractValue(raw.elapsedSeconds, 'integerValue') ?? 0,
         };
 
         setData(payload);

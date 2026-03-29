@@ -1,11 +1,6 @@
-export function energyWhToKwh(energyWh: number): number {
-  return (Number(energyWh) || 0) / 1000;
-}
-
 export function estimateChargingCost(args: { energyWh: number; costPerKwh: number }): number {
-  const kwh = energyWhToKwh(args.energyWh);
-  const rate = Number(args.costPerKwh) || 0;
-  return kwh * rate;
+  const ratePerWh = (Number(args.costPerKwh) || 0) / 1000;
+  return args.energyWh * ratePerWh;
 }
 
 export function formatMoney(args: { amount: number; currencySymbol: string }): string {

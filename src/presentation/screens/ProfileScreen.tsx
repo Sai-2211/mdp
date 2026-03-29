@@ -3,7 +3,7 @@ import { StyleSheet, Text, View, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { appConfig } from '../../config/appConfig';
-import { energyWhToKwh, estimateChargingCost, formatMoney } from '../../core/cost';
+import { estimateChargingCost, formatMoney } from '../../core/cost';
 import { Card } from '../components/Card';
 import { Screen } from '../components/Screen';
 import { theme } from '../theme/theme';
@@ -37,7 +37,7 @@ export function ProfileScreen() {
           <View style={styles.statIconWrap}>
             <Ionicons name="flash" size={24} color={theme.colors.warning} />
           </View>
-          <Text style={styles.statValue}>{energyWhToKwh(vm.totalEnergyWh).toFixed(2)} kWh</Text>
+          <Text style={styles.statValue}>{vm.totalEnergyWh.toFixed(2)} Wh</Text>
           <Text style={styles.statLabel}>Total Energy</Text>
         </Card>
         

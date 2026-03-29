@@ -2,26 +2,20 @@
   ESP32 WiFi → Firebase Firestore bridge for EV charger prototype.
 
   Hardware:
-    - DHT11 temperature sensor on pin 4
+    - DS18B20 temperature sensor on pin 4 (1-Wire, 4.7kΩ pull-up to 3.3V)
     - Relay module on pin 26
-    - ACS712 current sensor on pin 34 (5A module, 0.185 V/A)
-    - Voltage divider on pin 35 (ratio × 5)
+    - ACS712 30A current sensor on pin 35 (0.066 V/A)
+    - 25V voltage sensor module on pin 34
+    - MAX17048 fuel gauge on I2C (SDA=21, SCL=22)
+    - Active buzzer module on pin 25 (low level trigger)
+    - Green LED on pin 14 (via 220Ω resistor)
 
-  Firebase:
-    - Pushes sensor data to  device/status  (live) and  readings/{auto-id}  (history)
-    - Reads relay commands from  device/command
-    - Uses Email/Password auth with a dedicated device account
-
-  Required Arduino Libraries (install via Library Manager):
+  Required Libraries:
     1. Firebase ESP Client  — by mobizt
-    2. DHT sensor library   — by Adafruit
-    3. Adafruit Unified Sensor
-
-  Setup checklist:
-    1. Fill in WIFI_SSID and WIFI_PASSWORD below
-    2. Create a device account in Firebase Console → Authentication → Add User
-    3. Fill in DEVICE_EMAIL and DEVICE_PASSWORD with that account
-    4. Upload to ESP32, open Serial Monitor at 115200 baud
+    2. OneWire              — by Paul Stoffregen
+    3. DallasTemperature    — by Miles Burton
+    4. Adafruit MAX1704X    — by Adafruit
+    5. Adafruit BusIO       — by Adafruit
 */
 
 #include <WiFi.h>
@@ -30,23 +24,18 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <Wire.h>
-#include <MAX1704X.h>
-
-// Provide the token generation helper
+#include <Adafruit_MAX1704X.h>
 #include <addons/TokenHelper.h>
 
 // ─────────────────────────────────────────────
-//  CONFIGURATION — fill these in
+//  CONFIGURATION
 // ─────────────────────────────────────────────
-#define WIFI_SSID          "Sai2211"
-#define WIFI_PASSWORD      "Sai221107"
-
-#define FIREBASE_API_KEY   "AIzaSyDKiLZx-u1aSDqOIt7nm7Lpv15rBgOvhm8"
+#define WIFI_SSID           "Sai2211"
+#define WIFI_PASSWORD       "Sai221107"
+#define FIREBASE_API_KEY    "AIzaSyDKiLZx-u1aSDqOIt7nm7Lpv15rBgOvhm8"
 #define FIREBASE_PROJECT_ID "evcharger-437ad"
-
-// Create this account in Firebase Console → Authentication → Add User
-#define DEVICE_EMAIL       "esp32-device@evcharger.com"
-#define DEVICE_PASSWORD    "esp32@evcharger"
+#define DEVICE_EMAIL        "esp32-device@evcharger.com"
+#define DEVICE_PASSWORD     "esp32@evcharger"
 
 // ─────────────────────────────────────────────
 //  PINS
@@ -55,52 +44,75 @@
 #define RELAY_PIN    26
 #define CURRENT_PIN  35
 #define VOLTAGE_PIN  34
-#define LED_PIN      2       // Built-in LED (most ESP32 boards)
+#define LED_PIN      2
 #define BUZZER_PIN   25
-#define RED_LED      27
 #define GREEN_LED    14
+
+// ─────────────────────────────────────────────
+//  RELAY POLARITY
+//  If relay is not switching correctly, swap HIGH and LOW
+// ─────────────────────────────────────────────
+#define RELAY_ON  LOW
+#define RELAY_OFF HIGH
 
 // ─────────────────────────────────────────────
 //  CALIBRATION
 // ─────────────────────────────────────────────
-#define VOLTAGE_DIVIDER_RATIO  5.0     // Resistor divider ratio
-#define ACS712_SENSITIVITY     0.066   // V/A for ACS712-30A module
-#define ACS712_ZERO_VOLTAGE    2.5     // Output voltage at 0 A
-#define TEMP_LIMIT             40.0    // °C — relay forced OFF above this
+#define VOLTAGE_DIVIDER_RATIO  5.0
+#define ACS712_SENSITIVITY     0.066
+#define ACS712_ZERO_VOLTAGE    2.2
+#define TEMP_LIMIT             40.0
+#define VOLTAGE_MIN            3.0
 
 // ─────────────────────────────────────────────
 //  TIMING
 // ─────────────────────────────────────────────
-#define SENSOR_INTERVAL_MS     5000    // Push data every 5 seconds
-#define COMMAND_POLL_MS        2000    // Check relay command every 2 seconds
+#define SENSOR_INTERVAL_MS  5000
+#define COMMAND_POLL_MS     2000
+
+// ─────────────────────────────────────────────
+//  CHARGING STOP REASONS
+// ─────────────────────────────────────────────
+#define STOP_REASON_NONE          "none"
+#define STOP_REASON_APP           "app"
+#define STOP_REASON_SOC           "soc_reached"
+#define STOP_REASON_OVERHEAT      "overheat"
+#define STOP_REASON_OVERDISCHARGE "overdischarge"
 
 // ─────────────────────────────────────────────
 //  GLOBALS
 // ─────────────────────────────────────────────
 OneWire oneWire(TEMP_PIN);
 DallasTemperature tempSensor(&oneWire);
-MAX1704X gauge(0x36);
+Adafruit_MAX17048 gauge;
 
 FirebaseData fbdo;
 FirebaseAuth fbAuth;
 FirebaseConfig fbConfig;
 
-unsigned long lastSensorMs  = 0;
-unsigned long lastCommandMs = 0;
-unsigned long lastLedMs     = 0;
-bool relayState = false;
-bool firebaseReady = false;
-bool ledState = false;
+unsigned long lastSensorMs      = 0;
+unsigned long lastCommandMs     = 0;
+unsigned long lastLedMs         = 0;
+unsigned long lastGreenBlinkMs  = 0;
+unsigned long sessionStartMs    = 0;
+unsigned long lastEnergyUpdateMs = 0;
 
-String currentProfile = "car";
-float  targetSoC      = 95.0;
+bool relayState      = false;
+bool ledState        = false;
+bool greenBlinking   = false;
+bool greenBlinkState = false;
+
+// Prevents app from turning relay back ON after auto-stop
+// Must be manually reset by user tapping Start in app
+bool socStopActive   = false;
+
+String currentProfile      = "car";
+float  targetSoC           = 95.0;
+String stopReason          = STOP_REASON_APP; // app on boot = idle state
+float  accumulatedEnergyWh = 0.0;
 
 // ─────────────────────────────────────────────
-//  LED STATUS INDICATOR
-//   Slow blink (1s)  = Trying to connect WiFi
-//   Fast blink (250ms) = WiFi OK, Firebase not ready
-//   Solid ON          = Fully connected & operational
-//   Brief flash       = Data pushed to Firestore
+//  BUILT-IN LED HELPERS
 // ─────────────────────────────────────────────
 void ledBlink(int intervalMs) {
   unsigned long now = millis();
@@ -116,11 +128,44 @@ void ledOff() { digitalWrite(LED_PIN, LOW);  ledState = false; }
 
 void ledFlash(int count, int ms) {
   for (int i = 0; i < count; i++) {
-    digitalWrite(LED_PIN, HIGH);
-    delay(ms);
-    digitalWrite(LED_PIN, LOW);
-    delay(ms);
+    digitalWrite(LED_PIN, HIGH); delay(ms);
+    digitalWrite(LED_PIN, LOW);  delay(ms);
   }
+}
+
+// ─────────────────────────────────────────────
+//  GREEN LED CONTROL
+//  Steady ON  = charging active
+//  Fast blink = charging complete (SoC reached)
+//  OFF        = idle / stopped by app / overheat
+// ─────────────────────────────────────────────
+void setGreenLED(bool on) {
+  greenBlinking = false;
+  digitalWrite(GREEN_LED, on ? HIGH : LOW);
+}
+
+void startGreenBlink() {
+  greenBlinking    = true;
+  greenBlinkState  = false;
+  lastGreenBlinkMs = millis();
+}
+
+void handleGreenBlink() {
+  if (!greenBlinking) return;
+  unsigned long now = millis();
+  if (now - lastGreenBlinkMs >= 300) {
+    lastGreenBlinkMs = now;
+    greenBlinkState  = !greenBlinkState;
+    digitalWrite(GREEN_LED, greenBlinkState ? HIGH : LOW);
+  }
+}
+
+// ─────────────────────────────────────────────
+//  BUZZER
+//  Low level trigger module — LOW = ON, HIGH = OFF
+// ─────────────────────────────────────────────
+void setBuzzer(bool on) {
+  digitalWrite(BUZZER_PIN, on ? LOW : HIGH);
 }
 
 // ─────────────────────────────────────────────
@@ -132,7 +177,6 @@ void connectWiFi() {
   Serial.print("[WiFi] Connecting");
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 40) {
-    // Slow blink while connecting to WiFi
     ledBlink(1000);
     delay(500);
     Serial.print(".");
@@ -142,7 +186,6 @@ void connectWiFi() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.print("[WiFi] Connected! IP: ");
     Serial.println(WiFi.localIP());
-    // Quick triple-flash to confirm WiFi connected
     ledFlash(3, 150);
   } else {
     Serial.println("[WiFi] FAILED — will retry in loop");
@@ -153,168 +196,193 @@ void connectWiFi() {
 // ─────────────────────────────────────────────
 //  Firebase
 // ─────────────────────────────────────────────
-void tokenStatusCallback(token_info_t info) {
-  Serial.printf("[Token] Status: %s\n", info.status == token_status_ready ? "Ready" : "Not Ready");
-}
-
 void setupFirebase() {
-  fbConfig.api_key = FIREBASE_API_KEY;
-
-  fbAuth.user.email    = DEVICE_EMAIL;
-  fbAuth.user.password = DEVICE_PASSWORD;
-
+  fbConfig.api_key               = FIREBASE_API_KEY;
+  fbAuth.user.email              = DEVICE_EMAIL;
+  fbAuth.user.password           = DEVICE_PASSWORD;
   fbConfig.token_status_callback = tokenStatusCallback;
-
   Firebase.reconnectWiFi(true);
   Firebase.begin(&fbConfig, &fbAuth);
-
   Serial.println("[Firebase] Initializing...");
 }
 
 // ─────────────────────────────────────────────
 //  SENSOR READS
 // ─────────────────────────────────────────────
-// DS18B20 Temperature
 float readTemperatureC() {
   tempSensor.requestTemperatures();
   float t = tempSensor.getTempCByIndex(0);
-
   if (t == DEVICE_DISCONNECTED_C) {
     Serial.println("[Sensor][TEMP] ❌ DS18B20 not connected — check wiring and 4.7kΩ pull-up");
     return -999.0;
   }
   if (t < -10.0 || t > 100.0) {
-    Serial.printf("[Sensor][TEMP] ⚠ Suspicious reading: %.1f°C — possible loose connection\n", t);
+    Serial.printf("[Sensor][TEMP] ⚠ Suspicious reading: %.1f°C\n", t);
     return -999.0;
   }
   Serial.printf("[Sensor][TEMP] ✓ %.1f°C\n", t);
   return t;
 }
 
-// ACS712 Current Sensor
 float readCurrent() {
   const int samples = 50;
   float acc = 0;
   int validSamples = 0;
-
   for (int i = 0; i < samples; i++) {
     int raw = analogRead(CURRENT_PIN);
-
-    // Raw value of 0 or 4095 means sensor is disconnected or shorted
-    if (raw == 0 || raw == 4095) {
+    if (raw == 0) {
       Serial.println("[Sensor][CURRENT] ❌ ACS712 not connected or pin floating");
       return -999.0;
     }
-
     float voltage = raw * (3.3 / 4095.0);
     float current = (voltage - ACS712_ZERO_VOLTAGE) / ACS712_SENSITIVITY;
     acc += current;
     validSamples++;
     delay(2);
   }
-
-  if (validSamples == 0) {
-    Serial.println("[Sensor][CURRENT] ❌ No valid samples from ACS712");
-    return -999.0;
-  }
-
+  if (validSamples == 0) return -999.0;
   float result = acc / validSamples;
-
-  // ACS712 30A module — physically impossible to exceed ±30A
   if (result > 30.0 || result < -30.0) {
-    Serial.printf("[Sensor][CURRENT] ⚠ Reading out of range: %.2fA — check calibration\n", result);
+    Serial.printf("[Sensor][CURRENT] ⚠ Out of range: %.2fA\n", result);
     return -999.0;
   }
-
-  // Small negative readings near zero are just noise — clamp to 0
   if (result < 0.05 && result > -0.05) result = 0.0;
-
   Serial.printf("[Sensor][CURRENT] ✓ %.2fA\n", result);
   return result;
 }
 
-// 25V Voltage Sensor
 float readVoltage() {
   int raw = analogRead(VOLTAGE_PIN);
-
-  // Raw 0 means sensor is not connected or no voltage
   if (raw == 0) {
-    Serial.println("[Sensor][VOLTAGE] ❌ Voltage sensor not connected or battery disconnected");
+    Serial.println("[Sensor][VOLTAGE] ❌ Voltage sensor not connected");
     return -999.0;
   }
-
-  // Raw 4095 means input voltage is too high — ADC is saturated
-  if (raw == 4095) {
-    Serial.println("[Sensor][VOLTAGE] ❌ ADC saturated — voltage too high or sensor shorted");
-    return -999.0;
-  }
-
   float adcVoltage = raw * (3.3 / 4095.0);
-  float voltage = adcVoltage * VOLTAGE_DIVIDER_RATIO;
-
-  // Li-ion battery physically cannot go below 2.5V or above 4.25V
-  if (voltage < 2.5 || voltage > 4.3) {
-    Serial.printf("[Sensor][VOLTAGE] ⚠ Reading out of range: %.2fV — check sensor connections\n", voltage);
+  float voltage    = adcVoltage * VOLTAGE_DIVIDER_RATIO;
+  if (voltage < 2.0 || voltage > 4.5) {
+    Serial.printf("[Sensor][VOLTAGE] ⚠ Out of range: %.2fV\n", voltage);
     return -999.0;
   }
-
   Serial.printf("[Sensor][VOLTAGE] ✓ %.2fV\n", voltage);
   return voltage;
 }
 
-// MAX17048 Fuel Gauge
 float readSoC() {
-  float soc = gauge.getSOC();
-
-  if (soc < 0.0 || soc > 100.0) {
-    Serial.printf("[Sensor][SOC] ❌ MAX17048 not connected or bad reading: %.1f%%\n", soc);
+  float soc = gauge.cellPercent();
+  if (soc > 100.0) {
+    Serial.printf("[Sensor][SOC] ⚠ MAX17048 overshot: %.1f%% — clamping to 100%%\n", soc);
+    soc = 100.0;
+  }
+  if (soc < 0.0) {
+    Serial.printf("[Sensor][SOC] ❌ MAX17048 bad reading: %.1f%%\n", soc);
     return -999.0;
   }
-
   Serial.printf("[Sensor][SOC] ✓ %.1f%%\n", soc);
   return soc;
 }
 
-/*
-float readGaugeVoltage() {
-  float v = gauge.getVoltage();
-
-  if (v < 2.5 || v > 4.3) {
-    Serial.printf("[Sensor][GAUGE_V] ❌ MAX17048 voltage out of range: %.2fV\n", v);
-    return -999.0;
+// ─────────────────────────────────────────────
+//  FIREBASE: sync relay state back to command doc
+// ─────────────────────────────────────────────
+void writeRelayCommandToFirebase(bool state) {
+  FirebaseJson content;
+  content.set("fields/relay/booleanValue", state);
+  String mask = "relay";
+  if (Firebase.Firestore.patchDocument(&fbdo, FIREBASE_PROJECT_ID, "",
+      "device/command", content.raw(), mask.c_str())) {
+    Serial.printf("[Firebase] device/command relay → %s ✓\n",
+                  state ? "true" : "false");
+  } else {
+    Serial.printf("[Firebase] device/command FAILED: %s\n",
+                  fbdo.errorReason().c_str());
   }
-
-  Serial.printf("[Sensor][GAUGE_V] ✓ %.2fV\n", v);
-  return v;
-}
-*/
-
-void setBuzzer(bool on) {
-  digitalWrite(BUZZER_PIN, on ? LOW : HIGH); // BC557 PNP — inverted
-}
-
-void setLEDs(bool charging, bool done) {
-  digitalWrite(RED_LED,   charging ? HIGH : LOW);
-  digitalWrite(GREEN_LED, done     ? HIGH : LOW);
 }
 
 // ─────────────────────────────────────────────
-//  FIRESTORE: push sensor data
+//  RELAY CONTROL
+//  Way 1 — App button:      setRelay(true/false, STOP_REASON_APP)
+//  Way 2 — SoC target:      setRelay(false, STOP_REASON_SOC)
+//  Way 3 — Overheat:        setRelay(false, STOP_REASON_OVERHEAT)
+//  Way 4 — Over-discharge:  setRelay(false, STOP_REASON_OVERDISCHARGE)
 // ─────────────────────────────────────────────
-void pushStatus(float temperature, float voltage, float current, float power, float soc) {
+void setRelay(bool on, String reason) {
+  relayState = on;
+  digitalWrite(RELAY_PIN, on ? RELAY_ON : RELAY_OFF);
+
+  if (on) {
+    // Reset all stop flags when user manually starts charging
+    socStopActive        = false;
+    stopReason           = STOP_REASON_NONE;
+    sessionStartMs       = millis();
+    accumulatedEnergyWh  = 0.0;
+    lastEnergyUpdateMs   = millis();
+    setGreenLED(true);
+    setBuzzer(false);
+    Serial.println("[Relay] ON — charging started");
+
+  } else {
+    stopReason = reason;
+
+    if (reason == STOP_REASON_SOC) {
+      socStopActive = true;   // lock relay — prevent app from overriding
+      startGreenBlink();
+      setBuzzer(false);
+      Serial.printf("[Relay] OFF — SoC target %.0f%% reached\n", targetSoC);
+      writeRelayCommandToFirebase(false);
+
+    } else if (reason == STOP_REASON_OVERHEAT) {
+      socStopActive = true;   // lock relay during overheat too
+      setGreenLED(false);
+      setBuzzer(true);
+      Serial.println("[Relay] OFF — OVERHEAT safety cutoff");
+      writeRelayCommandToFirebase(false);
+
+    } else if (reason == STOP_REASON_OVERDISCHARGE) {
+      socStopActive = true;   // lock relay during overdischarge too
+      setGreenLED(false);
+      setBuzzer(true);
+      Serial.println("[Relay] OFF — OVER-DISCHARGE protection triggered");
+      writeRelayCommandToFirebase(false);
+
+    } else if (reason == STOP_REASON_APP) {
+      socStopActive = false;  // user stopped — allow restart
+      setGreenLED(false);
+      setBuzzer(false);
+      Serial.println("[Relay] OFF — stopped by app");
+
+    } else {
+      socStopActive = false;
+      setGreenLED(false);
+      setBuzzer(false);
+      Serial.println("[Relay] OFF");
+      writeRelayCommandToFirebase(false);
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+//  FIRESTORE: push all sensor data + status
+// ─────────────────────────────────────────────
+void pushStatus(float temperature, float voltage,
+                float current, float power, float soc) {
   FirebaseJson content;
 
-  // Use 0 as fallback for any failed sensor — app will show 0 instead of crashing
   content.set("fields/temperature/doubleValue", temperature == -999.0 ? 0.0 : temperature);
-  content.set("fields/voltage/doubleValue",     voltage    == -999.0 ? 0.0 : voltage);
-  content.set("fields/current/doubleValue",     current    == -999.0 ? 0.0 : current);
-  content.set("fields/power/doubleValue",       power      == -999.0 ? 0.0 : power);
-  content.set("fields/soc/doubleValue",         soc        == -999.0 ? 0.0 : soc);
+  content.set("fields/voltage/doubleValue",     voltage     == -999.0 ? 0.0 : voltage);
+  content.set("fields/current/doubleValue",     current     == -999.0 ? 0.0 : current);
+  content.set("fields/power/doubleValue",       power       == -999.0 ? 0.0 : power);
+  content.set("fields/soc/doubleValue",         soc         == -999.0 ? 0.0 : soc);
   content.set("fields/relay/booleanValue",      relayState);
   content.set("fields/profile/stringValue",     currentProfile);
   content.set("fields/targetSoC/doubleValue",   targetSoC);
+  content.set("fields/stopReason/stringValue",  stopReason);
+  content.set("fields/socStopActive/booleanValue", socStopActive);
 
-  // Sensor fault flags — app can read these to show warning icons
+  content.set("fields/energyWh/doubleValue",
+    accumulatedEnergyWh);
+  content.set("fields/elapsedSeconds/integerValue",
+    relayState ? (int)((millis() - sessionStartMs) / 1000) : 0);
+
   content.set("fields/faultTemp/booleanValue",    temperature == -999.0);
   content.set("fields/faultVoltage/booleanValue", voltage     == -999.0);
   content.set("fields/faultCurrent/booleanValue", current     == -999.0);
@@ -327,18 +395,23 @@ void pushStatus(float temperature, float voltage, float current, float power, fl
   strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%dT%H:%M:%SZ", &timeinfo);
   content.set("fields/timestamp/timestampValue", timeBuf);
 
-  String mask = "temperature,voltage,current,power,relay,timestamp,soc,profile,targetSoC,faultTemp,faultVoltage,faultCurrent,faultSoC";
+  String mask = "temperature,voltage,current,power,relay,timestamp,"
+                "soc,profile,targetSoC,stopReason,socStopActive,"
+                "energyWh,elapsedSeconds,"
+                "faultTemp,faultVoltage,faultCurrent,faultSoC";
 
-  if (Firebase.Firestore.patchDocument(&fbdo, FIREBASE_PROJECT_ID, "", "device/status", content.raw(), mask.c_str())) {
+  if (Firebase.Firestore.patchDocument(&fbdo, FIREBASE_PROJECT_ID, "",
+      "device/status", content.raw(), mask.c_str())) {
     Serial.println("[Firestore] Updated device/status ✓");
   } else {
-    Serial.printf("[Firestore] device/status FAILED: %s\n", fbdo.errorReason().c_str());
+    Serial.printf("[Firestore] device/status FAILED: %s\n",
+                  fbdo.errorReason().c_str());
   }
 
-  if (Firebase.Firestore.createDocument(&fbdo, FIREBASE_PROJECT_ID, "", "readings", content.raw())) {
-    Serial.println("[Firestore] Added readings entry ✓");
-  } else {
-    Serial.printf("[Firestore] readings FAILED: %s\n", fbdo.errorReason().c_str());
+  if (!Firebase.Firestore.createDocument(&fbdo, FIREBASE_PROJECT_ID, "",
+      "readings", content.raw())) {
+    Serial.printf("[Firestore] readings FAILED: %s\n",
+                  fbdo.errorReason().c_str());
   }
 }
 
@@ -346,35 +419,60 @@ void pushStatus(float temperature, float voltage, float current, float power, fl
 //  FIRESTORE: pull relay command from app
 // ─────────────────────────────────────────────
 void pullRelayCommand() {
-  if (Firebase.Firestore.getDocument(&fbdo, FIREBASE_PROJECT_ID, "", "device/command")) {
-    FirebaseJson payload;
-    payload.setJsonData(fbdo.payload().c_str());
-    FirebaseJsonData relayField;
-    if (payload.get(relayField, "fields/relay/booleanValue")) {
-      bool desired = relayField.boolValue;
-      if (desired != relayState) {
-        relayState = desired;
-        digitalWrite(RELAY_PIN, relayState ? HIGH : LOW);
-        Serial.printf("[Relay] Set to %s (from app command)\n", relayState ? "ON" : "OFF");
-        if (desired == true) {
-          setLEDs(true, false);  // red ON, green OFF
-          setBuzzer(false);
-        } else {
-          setLEDs(false, false);
-          setBuzzer(false);
-        }
-      }
-    }
-    FirebaseJsonData profileField;
-    if (payload.get(profileField, "fields/profile/stringValue")) {
-      currentProfile = profileField.stringValue;
+  if (!Firebase.Firestore.getDocument(&fbdo, FIREBASE_PROJECT_ID, "",
+      "device/command")) {
+    Serial.printf("[Firestore] command read FAILED: %s\n",
+                  fbdo.errorReason().c_str());
+    return;
+  }
+
+  FirebaseJson payload;
+  payload.setJsonData(fbdo.payload().c_str());
+
+  // Read profile
+  FirebaseJsonData profileField;
+  if (payload.get(profileField, "fields/profile/stringValue")) {
+    String newProfile = profileField.stringValue;
+    if (newProfile != currentProfile) {
+      currentProfile = newProfile;
       if      (currentProfile == "scooter") targetSoC = 60.0;
       else if (currentProfile == "bike")    targetSoC = 80.0;
       else if (currentProfile == "car")     targetSoC = 95.0;
       else if (currentProfile == "truck")   targetSoC = 100.0;
+      Serial.printf("[Profile] Changed to %s — target: %.0f%%\n",
+                    currentProfile.c_str(), targetSoC);
     }
-  } else {
-    Serial.printf("[Firestore] command read FAILED: %s\n", fbdo.errorReason().c_str());
+  }
+
+  // Read custom SoC target
+  FirebaseJsonData targetField;
+  if (payload.get(targetField, "fields/targetSoC/doubleValue")) {
+    targetSoC = targetField.doubleValue;
+  } else if (payload.get(targetField, "fields/targetSoC/integerValue")) {
+    targetSoC = targetField.intValue;
+  }
+
+  // Read relay command — Way 1 (app control)
+  FirebaseJsonData relayField;
+  if (payload.get(relayField, "fields/relay/booleanValue")) {
+    bool desired = relayField.boolValue;
+
+    // If socStopActive is true, only allow relay ON if user
+    // explicitly taps Start — which resets socStopActive
+    if (desired == true && socStopActive) {
+      Serial.println("[Relay] ⚠ App sent ON but socStopActive — ignoring");
+      // Write false back so app stays in correct state
+      writeRelayCommandToFirebase(false);
+      return;
+    }
+
+    if (desired != relayState) {
+      if (desired == true) {
+        setRelay(true, STOP_REASON_NONE);
+      } else {
+        setRelay(false, STOP_REASON_APP);
+      }
+    }
   }
 }
 
@@ -383,44 +481,60 @@ void pullRelayCommand() {
 // ─────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
-  Serial.println();
-  Serial.println("==============================");
+  Serial.println("\n==============================");
   Serial.println("  EV Charger ESP32 — Starting");
   Serial.println("==============================");
 
-  // LED init
+  // Built-in LED
   pinMode(LED_PIN, OUTPUT);
   ledOff();
 
-  // Sensor init
-  tempSensor.begin();
+  // Relay — ensure OFF on boot
   pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, LOW);
+  digitalWrite(RELAY_PIN, RELAY_OFF);
 
-  // Fuel gauge init
-  Wire.begin(21, 22);
-  gauge.begin();
-  gauge.setAlertThreshold(10);
-
-  // Buzzer and LED init
+  // Buzzer — ensure OFF on boot
   pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(RED_LED, OUTPUT);
-  pinMode(GREEN_LED, OUTPUT);
   digitalWrite(BUZZER_PIN, HIGH);
-  digitalWrite(RED_LED, LOW);
+
+  // Green LED — ensure OFF on boot
+  pinMode(GREEN_LED, OUTPUT);
   digitalWrite(GREEN_LED, LOW);
 
-  // Network init
+  // Fuel gauge — MAX17048 (I2C must init before 1-Wire)
+  Wire.begin(21, 22);
+  if (!gauge.begin()) {
+    Serial.println("[MAX17048] ❌ Not found — check SDA/SCL wiring");
+  } else {
+    Serial.println("[MAX17048] ✓ Found");
+    gauge.setAlertVoltages(3.0, 4.2);
+    gauge.quickStart();
+    delay(1000);
+    Serial.printf("[MAX17048] Voltage: %.2fV  SoC: %.1f%%\n",
+                  gauge.cellVoltage(), gauge.cellPercent());
+  }
+
+  // Temperature sensor — 1-Wire (init after I2C)
+  tempSensor.begin();
+  Serial.println("[DS18B20] Initialized");
+
+  // WiFi
   connectWiFi();
 
-  // ← ADD THIS BLOCK right here
-  configTime(19800, 0, "pool.ntp.org"); // UTC+5:30 India
+  // NTP
+  configTime(19800, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
   Serial.print("[NTP] Syncing time");
-  while (time(nullptr) < 1000000000) {
+  int ntpAttempts = 0;
+  while (time(nullptr) < 1000000000 && ntpAttempts < 20) {
     Serial.print(".");
     delay(500);
+    ntpAttempts++;
   }
-  Serial.println(" synced ✓");
+  if (time(nullptr) < 1000000000) {
+    Serial.println(" FAILED — continuing without NTP");
+  } else {
+    Serial.println(" synced ✓");
+  }
 
   setupFirebase();
 }
@@ -429,21 +543,17 @@ void setup() {
 //  MAIN LOOP
 // ─────────────────────────────────────────────
 void loop() {
-  // Reconnect WiFi if dropped
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[WiFi] Disconnected — reconnecting...");
     connectWiFi();
   }
 
-  // Wait for Firebase to be ready (token obtained)
   if (!Firebase.ready()) {
-    // Fast blink: WiFi OK but Firebase still authenticating
     ledBlink(250);
     delay(500);
     return;
   }
 
-  // Solid ON: fully connected and operational
   ledOn();
 
   unsigned long now = millis();
@@ -457,44 +567,61 @@ void loop() {
     float current     = readCurrent();
     float soc         = readSoC();
 
-    // Only calculate power if both voltage and current are valid
     float power = -999.0;
     if (voltage != -999.0 && current != -999.0) {
       power = voltage * current;
-    } else {
-      Serial.println("[Sensor][POWER] ⚠ Cannot calculate power — voltage or current fault");
-  }
+    }
 
-  Serial.println("------- Sensor Readings -------");
-  Serial.printf("  Temperature: %s\n", temperature == -999.0 ? "FAULT" : String(temperature, 1) + " °C");
-  Serial.printf("  Voltage:     %s\n", voltage     == -999.0 ? "FAULT" : String(voltage, 2)     + " V");
-  Serial.printf("  Current:     %s\n", current     == -999.0 ? "FAULT" : String(current, 2)     + " A");
-  Serial.printf("  Power:       %s\n", power       == -999.0 ? "FAULT" : String(power, 2)       + " W");
-  Serial.printf("  SoC:         %s\n", soc         == -999.0 ? "FAULT" : String(soc, 1)         + " %");
-  Serial.printf("  Relay:       %s\n", relayState ? "ON" : "OFF");
-  Serial.printf("  Profile:     %s (target %.0f%%)\n", currentProfile.c_str(), targetSoC);
-  Serial.println("-------------------------------");
+    // Accumulate energy only when charging and power is positive
+    if (relayState && power > 0.0) {
+      float deltaHours = (millis() - lastEnergyUpdateMs) / 3600000.0;
+      accumulatedEnergyWh += power * deltaHours;
+      lastEnergyUpdateMs = millis();
+    } else if (relayState) {
+      lastEnergyUpdateMs = millis();
+    }
 
-  // Safety — only trigger if temperature is a valid reading
-  if (temperature != -999.0 && temperature > TEMP_LIMIT && relayState) {
-    relayState = false;
-    digitalWrite(RELAY_PIN, LOW);
-    setLEDs(false, false);
-    setBuzzer(true);
-    Serial.printf("[SAFETY] Temperature %.1f°C exceeded limit — RELAY FORCED OFF\n", temperature);
-  }
+    Serial.println("\n------- Sensor Readings -------");
+    if (temperature == -999.0) Serial.println("  Temperature: FAULT");
+    else Serial.printf("  Temperature: %.1f °C\n", temperature);
+    if (voltage == -999.0) Serial.println("  Voltage:     FAULT");
+    else Serial.printf("  Voltage:     %.2f V\n", voltage);
+    if (current == -999.0) Serial.println("  Current:     FAULT");
+    else Serial.printf("  Current:     %.2f A\n", current);
+    if (power == -999.0) Serial.println("  Power:       FAULT");
+    else Serial.printf("  Power:       %.2f W\n", power);
+    if (soc == -999.0) Serial.println("  SoC:         FAULT");
+    else Serial.printf("  SoC:         %.1f %%\n", soc);
+    Serial.printf("  Energy:      %.4f Wh\n", accumulatedEnergyWh);
+    Serial.printf("  Relay:       %s\n", relayState ? "ON" : "OFF");
+    Serial.printf("  SocStop:     %s\n", socStopActive ? "LOCKED" : "unlocked");
+    Serial.printf("  Stop Reason: %s\n", stopReason.c_str());
+    Serial.printf("  Profile:     %s (target %.0f%%)\n",
+                  currentProfile.c_str(), targetSoC);
+    Serial.println("-------------------------------");
 
-  // Auto-stop — only trigger if SoC is a valid reading
-  if (soc != -999.0 && soc >= targetSoC && relayState) {
-    relayState = false;
-    digitalWrite(RELAY_PIN, LOW);
-    setLEDs(false, true);
-    setBuzzer(false);
-    Serial.printf("[Profile] Target %.0f%% reached — charging stopped\n", targetSoC);
-  }
+    // ── WAY 4: Over-discharge protection ───────
+    if (voltage != -999.0 && voltage < VOLTAGE_MIN && relayState) {
+      setRelay(false, STOP_REASON_OVERDISCHARGE);
+      Serial.printf("[SAFETY] ⚠ Voltage %.2fV below %.1fV\n",
+                    voltage, VOLTAGE_MIN);
+    }
 
-  // Always push to Firestore regardless of sensor faults
-  pushStatus(temperature, voltage, current, power, soc);
+    // ── WAY 3: Overheat safety ──────────────────
+    if (temperature != -999.0 && temperature > TEMP_LIMIT && relayState) {
+      setRelay(false, STOP_REASON_OVERHEAT);
+      Serial.printf("[SAFETY] ⚠ Temperature %.1f°C exceeded limit\n",
+                    temperature);
+    }
+
+    // ── WAY 2: Auto-stop when SoC target reached
+    if (soc != -999.0 && soc >= targetSoC && relayState) {
+      setRelay(false, STOP_REASON_SOC);
+      Serial.printf("[Auto-Stop] ✓ SoC %.1f%% reached target %.0f%%\n",
+                    soc, targetSoC);
+    }
+
+    pushStatus(temperature, voltage, current, power, soc);
   }
 
   // ── Poll relay command from app ─────────────
@@ -502,17 +629,28 @@ void loop() {
     lastCommandMs = now;
     pullRelayCommand();
 
-    // Re-check safety after command pull
+    // Overheat re-check after app command
     tempSensor.requestTemperatures();
     float tempCheck = tempSensor.getTempCByIndex(0);
-    if (tempCheck != DEVICE_DISCONNECTED_C && tempCheck > TEMP_LIMIT && relayState) {
-      relayState = false;
-      digitalWrite(RELAY_PIN, LOW);
-      setLEDs(false, false);
-      setBuzzer(true);
-      Serial.println("[SAFETY] Overheat after command — relay forced OFF");
+    if (tempCheck != DEVICE_DISCONNECTED_C &&
+        tempCheck > TEMP_LIMIT && relayState) {
+      setRelay(false, STOP_REASON_OVERHEAT);
+      Serial.println("[SAFETY] ⚠ Overheat after app command — relay forced OFF");
+    }
+
+    // Over-discharge re-check after app command
+    int rawV = analogRead(VOLTAGE_PIN);
+    if (rawV > 0) {
+      float voltCheck = (rawV * (3.3 / 4095.0)) * VOLTAGE_DIVIDER_RATIO;
+      if (voltCheck < VOLTAGE_MIN && relayState) {
+        setRelay(false, STOP_REASON_OVERDISCHARGE);
+        Serial.printf("[SAFETY] ⚠ Voltage %.2fV after command\n", voltCheck);
+      }
     }
   }
+
+  // ── Handle green LED blink (non-blocking) ───
+  handleGreenBlink();
 
   delay(100);
 }

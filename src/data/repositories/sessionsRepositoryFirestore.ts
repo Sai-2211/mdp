@@ -26,6 +26,7 @@ export class SessionsRepositoryFirestore implements SessionsRepository {
         stopReason: data.stopReason,
         soc: data.soc,
         profile: data.profile,
+        carbonSavedGrams: data.carbonSavedGrams,
       };
     });
   }
@@ -43,6 +44,7 @@ export class SessionsRepositoryFirestore implements SessionsRepository {
       stopReason: data.stopReason,
       soc: data.soc,
       profile: data.profile,
+      carbonSavedKg: data.carbonSavedKg,
     };
   }
 }

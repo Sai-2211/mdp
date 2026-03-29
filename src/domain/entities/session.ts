@@ -7,5 +7,6 @@ export type ChargingSession = {
   stopReason?: string;
   soc?: number;
   profile?: string;
+  carbonSavedGrams?: number;
 };
 

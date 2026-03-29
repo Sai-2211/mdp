@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View, Animated, Easing, ScrollView } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View, Animated, Easing, ScrollView, TextInput } from 'react-native';
 import { getFirestore, collection, doc, setDoc } from '@react-native-firebase/firestore';
 import { getApp } from '@react-native-firebase/app';
 import { Ionicons } from '@expo/vector-icons';
@@ -84,7 +84,36 @@ export function VehicleProfileScreen() {
 
   const { data } = useSensorData();
   const activeProfile = data?.profile ?? 'car';
+  const currentTargetStr = data?.targetSoC?.toString() ?? '95';
   const [pending, setPending] = useState<string | null>(null);
+  const [customTarget, setCustomTarget] = useState(currentTargetStr);
+
+  const saveCustomTarget = async () => {
+    const value = Number(customTarget);
+    if (!Number.isFinite(value) || value < 1 || value > 100) {
+      Alert.alert('Invalid', 'Enter a number between 1 and 100.');
+      return;
+    }
+    setPending('custom');
+    try {
+      const db = getFirestore(getApp());
+      await setDoc(
+        doc(collection(db, 'device'), 'command'),
+        { profile: 'custom', targetSoC: value },
+        { merge: true },
+      );
+      await setDoc(
+        doc(collection(db, 'device'), 'status'),
+        { profile: 'custom', targetSoC: value },
+        { merge: true },
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Failed to save custom target';
+      Alert.alert('Error', msg);
+    } finally {
+      setPending(null);
+    }
+  };
 
   const selectProfile = async (profileId: string) => {
     // Optimistic UI updates feel faster. The `pending` state covers real processing.
@@ -135,6 +164,29 @@ export function VehicleProfileScreen() {
               onSelect={() => void selectProfile(p.id)}
             />
           ))}
+          
+          <View style={styles.card}>
+            <Text style={[styles.label, { fontSize: 20 }]}>Custom Targeting</Text>
+            <Text style={styles.targetText}>Set a precise custom SoC shutoff target (override).</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 12, gap: 12 }}>
+              <TextInput
+                style={styles.input}
+                value={customTarget}
+                onChangeText={setCustomTarget}
+                placeholder="e.g. 80"
+                placeholderTextColor={theme.colors.muted}
+                keyboardType="numeric"
+                maxLength={3}
+              />
+              <Pressable
+                style={styles.saveBtn}
+                disabled={pending === 'custom'}
+                onPress={() => void saveCustomTarget()}
+              >
+                <Text style={styles.saveBtnText}>{pending === 'custom' ? 'Saving...' : 'Set Target'}</Text>
+              </Pressable>
+            </View>
+          </View>
         </View>
       </ScrollView>
     </Screen>
@@ -187,4 +239,24 @@ const styles = StyleSheet.create({
   rateText: { color: theme.colors.muted, fontWeight: '800', fontSize: 13 },
   rateTextActive: { color: '#fff' },
   loadingText: { color: theme.colors.primary, fontWeight: '800', fontSize: 13 },
+  input: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.md,
+    color: theme.colors.text,
+    fontWeight: '800',
+    fontSize: 16,
+    backgroundColor: theme.colors.card2,
+  },
+  saveBtn: {
+    backgroundColor: theme.colors.primary,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderRadius: theme.radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  saveBtnText: { color: theme.colors.onPrimary, fontWeight: '800', fontSize: 16 },
 });

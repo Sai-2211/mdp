@@ -1,4 +1,4 @@
-import { getFirestore, collection, doc, getDoc, setDoc } from '@react-native-firebase/firestore';
+import { getFirestore, collection, doc, getDoc, setDoc, query, where, getDocs, orderBy, limit } from '@react-native-firebase/firestore';
 import { getApp } from '@react-native-firebase/app';
 
 import type { ChargerRepository, StartChargingResult } from '../../domain/repositories/chargerRepository';
@@ -65,7 +65,8 @@ export class ChargerRepositoryFirestore implements ChargerRepository {
     await setDoc(newSessionRef, {
       startTime: new Date(),
       energyWh: 0,
-      status: 'in_progress'
+      status: 'in_progress',
+      stopReason: 'none'
     });
     activeSessionId = newSessionRef.id;
 
@@ -80,18 +81,66 @@ export class ChargerRepositoryFirestore implements ChargerRepository {
       { merge: true },
     );
 
-    // 2. Terminate tracked session
+    // 2. Fetch latest telemetry from device/status
+    const snap = await getDoc(doc(collection(this.db, 'device'), 'status'));
+    let additionalData: Record<string, any> = {};
+    if (snap.exists()) {
+      const data = snap.data() || {};
+      const ext = (field: any, type: string) => (field && typeof field === 'object' && type in field) ? field[type] : field;
+      const energyWh = ext(data.energyWh, 'doubleValue') || 0;
+      const elapsed = ext(data.elapsedSeconds, 'integerValue') || 0;
+      const stopReason = ext(data.stopReason, 'stringValue') || 'user_stop';
+      const soc = ext(data.soc, 'doubleValue') || 0;
+      
+      const carbonSavedGrams = energyWh * 0.8;
+      
+      additionalData = {
+        energyWh,
+        elapsedSeconds: elapsed,
+        stopReason,
+        soc,
+        carbonSavedGrams
+      };
+    }
+
+    // 3. Terminate tracked session
     if (activeSessionId) {
-      await setDoc(
-        doc(collection(this.db, 'charging_sessions'), activeSessionId),
-        { 
+        const payload: any = { 
           endTime: new Date(), 
           status: 'completed',
-          stopReason: 'user_stop'
-        },
-        { merge: true }
-      );
-      activeSessionId = null;
+        };
+        
+        if (additionalData.energyWh !== undefined) payload.energyWh = additionalData.energyWh;
+        if (additionalData.elapsedSeconds !== undefined) payload.elapsedSeconds = additionalData.elapsedSeconds;
+        if (additionalData.stopReason !== undefined) payload.stopReason = additionalData.stopReason;
+        if (additionalData.soc !== undefined) payload.soc = additionalData.soc;
+        if (additionalData.carbonSavedGrams !== undefined) payload.carbonSavedGrams = additionalData.carbonSavedGrams;
+
+        await setDoc(
+          doc(collection(this.db, 'charging_sessions'), activeSessionId),
+          payload,
+          { merge: true }
+        );
+        activeSessionId = null;
+    } else {
+      // 4. Recovery: Check if there's a stale in_progress session
+      const q = query(collection(this.db, 'charging_sessions'), where('status', '==', 'in_progress'), orderBy('startTime', 'desc'), limit(1));
+      const staleSnap = await getDocs(q);
+      if (!staleSnap.empty) {
+         const staleDocRef = staleSnap.docs[0].ref;
+         
+         const payload: any = {
+           endTime: new Date(),
+           status: 'completed',
+         };
+         if (additionalData.energyWh !== undefined) payload.energyWh = additionalData.energyWh;
+         if (additionalData.elapsedSeconds !== undefined) payload.elapsedSeconds = additionalData.elapsedSeconds;
+         if (additionalData.stopReason !== undefined) payload.stopReason = additionalData.stopReason;
+         if (additionalData.soc !== undefined) payload.soc = additionalData.soc;
+         if (additionalData.carbonSavedGrams !== undefined) payload.carbonSavedGrams = additionalData.carbonSavedGrams;
+
+         await setDoc(staleDocRef, payload, { merge: true });
+      }
     }
   }
 }

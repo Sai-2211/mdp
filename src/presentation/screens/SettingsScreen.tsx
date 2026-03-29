@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { getFirestore, collection, doc, setDoc } from '@react-native-firebase/firestore';
 import { getApp } from '@react-native-firebase/app';
 
@@ -51,31 +51,7 @@ export function SettingsScreen() {
     return Date.now() - lastMs < 30000;
   }, [data?.timestamp]);
 
-  // ── Custom SoC target ──
-  const [customTarget, setCustomTarget] = useState('');
-  const [targetSaving, setTargetSaving] = useState(false);
-
-  const saveCustomTarget = async () => {
-    const value = Number(customTarget);
-    if (!Number.isFinite(value) || value < 1 || value > 100) {
-      Alert.alert('Invalid', 'Enter a number between 1 and 100.');
-      return;
-    }
-    setTargetSaving(true);
-    try {
-      const db = getFirestore(getApp());
-      await setDoc(
-        doc(collection(db, 'device'), 'command'),
-        { customTarget: value },
-        { merge: true },
-      );
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Failed to save';
-      Alert.alert('Error', msg);
-    } finally {
-      setTargetSaving(false);
-    }
-  };
+  // ── Custom SoC target logic moved to VehicleProfileScreen ──
 
   return (
     <Screen>
@@ -117,21 +93,7 @@ export function SettingsScreen() {
         <PrimaryButton title="Save" onPress={() => void saveTempLimit()} loading={tempSaving} />
       </Card>
 
-      {/* Custom SoC target */}
-      <Card style={[styles.card, { marginTop: theme.spacing.md }]}>
-        <Text style={styles.cardTitle}>Custom SoC Target</Text>
-        <Text style={styles.hint}>Override the profile target with a custom value (1–100%).</Text>
-        <TextInput
-          style={styles.input}
-          value={customTarget}
-          onChangeText={setCustomTarget}
-          placeholder="e.g. 80"
-          placeholderTextColor={theme.colors.muted}
-          keyboardType="numeric"
-          maxLength={3}
-        />
-        <PrimaryButton title="Save" onPress={() => void saveCustomTarget()} loading={targetSaving} />
-      </Card>
+      {/* End Settings cards */}
     </Screen>
   );
 }

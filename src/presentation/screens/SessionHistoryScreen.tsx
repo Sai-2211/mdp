@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import type { HistoryStackParamList } from '../navigation/types';
 import { appConfig } from '../../config/appConfig';
-import { energyWhToKwh, estimateChargingCost, formatMoney } from '../../core/cost';
+import { estimateChargingCost, formatMoney } from '../../core/cost';
 import { formatDateTime, formatDuration } from '../../core/time';
 import type { ChargingSession } from '../../domain/entities/session';
 import { Card } from '../components/Card';
@@ -20,12 +20,13 @@ type Props = NativeStackScreenProps<HistoryStackParamList, 'SessionHistory'>;
 
 function sessionSubtitle(s: ChargingSession): string {
   const duration = s.elapsedSeconds != null ? formatDuration(s.elapsedSeconds) : '—';
-  const energy = `${energyWhToKwh(s.energyWh).toFixed(2)} kWh`;
+  const energy = `${s.energyWh.toFixed(2)} Wh`;
+  const carbon = s.carbonSavedGrams ? `${s.carbonSavedGrams.toFixed(0)} g CO₂` : '—';
   const cost = formatMoney({
     amount: estimateChargingCost({ energyWh: s.energyWh, costPerKwh: appConfig.costPerKwh }),
     currencySymbol: appConfig.currencySymbol,
   });
-  return `${duration} • ${energy} • ${cost}`;
+  return `${duration} • ${energy} • ${carbon} • ${cost}`;
 }
 
 function profileIcon(id?: string): any {
@@ -59,6 +60,10 @@ export function SessionHistoryScreen({ navigation }: Props) {
     (sum, s) => sum + estimateChargingCost({ energyWh: s.energyWh, costPerKwh: appConfig.costPerKwh }),
     0,
   );
+  const totalCarbonGrams = vm.sessions.reduce(
+    (sum, s) => sum + (s.carbonSavedGrams ?? 0),
+    0,
+  );
 
   useEffect(() => {
     void vm.refresh();
@@ -77,7 +82,8 @@ export function SessionHistoryScreen({ navigation }: Props) {
       <Card style={{ marginTop: theme.spacing.md }}>
         <Text style={styles.sectionTitle}>Account Summary</Text>
         <View style={{ marginTop: theme.spacing.md, gap: theme.spacing.sm }}>
-          <LabeledValue label="Total Energy" value={`${energyWhToKwh(vm.totalEnergyWh).toFixed(2)} kWh`} />
+          <LabeledValue label="Total Energy" value={`${vm.totalEnergyWh.toFixed(2)} Wh`} />
+          <LabeledValue label="Total Carbon Saved" value={`${totalCarbonGrams.toFixed(0)} g CO₂`} />
           <LabeledValue
             label="Total Cost"
             value={formatMoney({ amount: totalCost, currencySymbol: appConfig.currencySymbol })}
@@ -109,7 +115,7 @@ export function SessionHistoryScreen({ navigation }: Props) {
                   ) : null}
                 </View>
                 <Text style={styles.itemSub}>{sessionSubtitle(item)}</Text>
-                {item.soc != null ? <Text style={styles.itemMeta}>SoC: {item.soc.toFixed(0)}%</Text> : null}
+                {item.soc != null ? <Text style={styles.itemMeta}>SoC: {item.soc.toFixed(1)}%</Text> : null}
                 <Text style={styles.itemMeta}>Stop reason: {item.stopReason ?? '—'}</Text>
               </Card>
             )}

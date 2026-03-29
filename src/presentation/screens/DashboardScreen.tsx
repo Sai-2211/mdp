@@ -6,7 +6,7 @@ import { LineChart } from 'react-native-chart-kit';
 import { Ionicons } from '@expo/vector-icons';
 
 import { appConfig } from '../../config/appConfig';
-import { energyWhToKwh, estimateChargingCost, formatMoney } from '../../core/cost';
+import { estimateChargingCost, formatMoney } from '../../core/cost';
 import { formatDateTime, formatDuration } from '../../core/time';
 import { Card } from '../components/Card';
 import { ErrorBanner } from '../components/ErrorBanner';
@@ -25,12 +25,9 @@ function envNumber(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-const BATTERY_CAPACITY_KWH = Math.max(
-  0.1,
-  envNumber(
-    process.env.EXPO_PUBLIC_BATTERY_CAPACITY_KWH,
-    envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 5000) / 1000,
-  ),
+const BATTERY_CAPACITY_WH = Math.max(
+  100,
+  envNumber(process.env.EXPO_PUBLIC_BATTERY_CAPACITY_WH, 5000)
 );
 
 function clamp01(value: number): number {
@@ -84,7 +81,7 @@ function AnimatedValueText({ text, style }: { text: string; style: any }) {
 
 function ChargingProgressRing({ batteryPercent, energyWh }: { batteryPercent: number; energyWh: number }) {
   const percent = clamp01((Number(batteryPercent) || 0) / 100);
-  const energyKwh = energyWhToKwh(energyWh);
+  const energyVal = energyWh;
   const size = 184;
   const stroke = 12;
   const r = (size - stroke) / 2;
@@ -137,7 +134,7 @@ function ChargingProgressRing({ batteryPercent, energyWh }: { batteryPercent: nu
       </View>
 
       <Text style={styles.ringSub}>
-        {energyKwh.toFixed(2)} kWh of {BATTERY_CAPACITY_KWH.toFixed(1)} kWh
+        {energyVal.toFixed(2)} Wh of {BATTERY_CAPACITY_WH.toFixed(0)} Wh
       </Text>
       <Text style={styles.ringDisclaimer}>Estimated values • Prototype charger</Text>
     </Card>
@@ -211,7 +208,7 @@ function SoCCard({ sensorData }: { sensorData: import('../../hooks/useSensorData
           />
         </Svg>
         <View style={{ position: 'absolute', alignItems: 'center' }}>
-          <AnimatedValueText text={`${soc.toFixed(0)}%`} style={{ color: theme.colors.text, fontWeight: '900', fontSize: 36 }} />
+          <AnimatedValueText text={`${soc.toFixed(1)}%`} style={{ color: theme.colors.text, fontWeight: '900', fontSize: 36 }} />
           <Text style={{ color: theme.colors.muted, fontWeight: '800', marginTop: 2, fontSize: 13 }}>STATE OF CHARGE</Text>
         </View>
       </View>
@@ -226,7 +223,7 @@ function SoCCard({ sensorData }: { sensorData: import('../../hooks/useSensorData
         </View>
         <View>
           <Text style={{ color: theme.colors.text, fontWeight: '900', fontSize: 16 }}>{profileName(profile)}</Text>
-          <Text style={{ color: theme.colors.muted, fontWeight: '800', fontSize: 13 }}>Target: {targetSoC.toFixed(0)}%</Text>
+          <Text style={{ color: theme.colors.muted, fontWeight: '800', fontSize: 13 }}>Target: {targetSoC.toFixed(1)}%</Text>
         </View>
       </View>
       
@@ -309,7 +306,7 @@ function ChargingControlCard({
 
 function PowerChartCard({ sensorData }: { sensorData: import('../../hooks/useSensorData').SensorData | null }) {
   const chartWidth = Dimensions.get('window').width - theme.spacing.md * 4 - 2;
-  const powerKW = (sensorData?.power ?? 0) / 1000;
+  const powerKW = sensorData?.power ?? 0;
   
   const [data, setData] = useState<{ labels: string[]; datasets: { data: number[] }[] }>({
     labels: [''],
@@ -327,7 +324,7 @@ function PowerChartCard({ sensorData }: { sensorData: import('../../hooks/useSen
     <Card style={styles.socCard}>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
         <Text style={{ color: theme.colors.text, fontWeight: '900', fontSize: 16 }}>Power Delivery</Text>
-        <Text style={{ color: theme.colors.primary, fontWeight: '800' }}>{powerKW.toFixed(2)} kW</Text>
+        <Text style={{ color: theme.colors.primary, fontWeight: '800' }}>{powerKW.toFixed(0)} W</Text>
       </View>
       <View style={{ marginTop: theme.spacing.sm }}>
         <LineChart
@@ -413,33 +410,31 @@ export function DashboardScreen() {
   const batteryPercent = sensorData?.soc ?? 0;
   const liveChargerState = sensorData?.relay ? 'charging' : 'idle';
 
+  // Listen for automatic stops from the hardware
+  const autoStopHandledRef = useRef<{ [key: string]: boolean }>({});
+  
   useEffect(() => {
-    if (batteryPercent != null && batteryPercent < 100) {
-      lastAutoStopSessionRef.current = null;
-    }
-  }, [batteryPercent]);
+    if (!sensorData) return;
+    if (sensorData.relay === true) return; // Currently charging
+    if (sensorData.stopReason === 'none' || sensorData.stopReason === 'app') return;
 
-  useEffect(() => {
-    if (batteryPercent == null || batteryPercent < 100) return;
-    if (liveChargerState !== 'charging') return;
-    if (autoStopInFlightRef.current) return;
-    const completionKey = 'done';
-    if (lastAutoStopSessionRef.current === completionKey) return;
+    // ESP32 stopped it automatically due to SoC or overheat.
+    const key = `${sensorData.stopReason}-${sensorData.timestamp}`;
+    if (autoStopHandledRef.current[key]) return; // Already handled
 
-    autoStopInFlightRef.current = true;
-    void vm
-      .stop()
-      .then(() => {
-        Alert.alert('Charging complete', 'Battery reached 100%. Charging has been stopped.');
-      })
-      .catch(() => {
-        Alert.alert('Charging complete', 'Battery reached 100%. If charging continues, tap Stop.');
-      })
-      .finally(() => {
-        autoStopInFlightRef.current = false;
-        lastAutoStopSessionRef.current = completionKey;
-      });
-  }, [batteryPercent, liveChargerState, vm.stop]);
+    autoStopHandledRef.current[key] = true;
+
+    // Conclude session in backend
+    void vm.stop().then(() => {
+      recent.refresh();
+      if (sensorData.stopReason === 'soc_reached') {
+        Alert.alert('Charging Complete', `Target SoC of ${sensorData.targetSoC.toFixed(1)}% reached. Charging has been safely stopped.`);
+      } else if (sensorData.stopReason === 'overheat') {
+        Alert.alert('⚠️ Overheat Warning', 'Battery temperature exceeded safe limits. Charging was forcefully stopped. Please check your setup.');
+      }
+    });
+
+  }, [sensorData?.relay, sensorData?.stopReason, sensorData?.timestamp, vm, recent]);
 
   return (
     <Screen>
@@ -507,7 +502,7 @@ export function DashboardScreen() {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.sessionTitle}>{formatDateTime(s.startTime)}</Text>
                       <Text style={styles.sessionSub}>
-                        {duration} • {energyWhToKwh(s.energyWh).toFixed(2)} kWh • {cost}
+                        {duration} • {s.energyWh.toFixed(2)} Wh • {cost}
                       </Text>
                       <Text style={styles.sessionMeta}>Stop reason: {s.stopReason ?? '—'}</Text>
                     </View>

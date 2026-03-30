@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useMemo, useRef, useEffect } from 'react';
 
 import { appConfig } from '../../config/appConfig';
+import { isFirebaseNativeAvailable } from '../../config/firebase';
 import { ApiClient } from '../../data/api/apiClient';
 import { MockAuthRepository, MockChargerRepository, MockLiveChargingRepository, MockSessionsRepository } from '../../data/mock/mockRepositories';
 import { AuthRepositoryImpl } from '../../data/repositories/authRepositoryImpl';
@@ -47,7 +48,9 @@ export function RepositoriesProvider({ children }: { children: React.ReactNode }
   );
 
   const repositories = useMemo<Repositories>(() => {
-    if (appConfig.useMock) {
+    const useDemoRepositories = appConfig.useMock || !isFirebaseNativeAvailable();
+
+    if (useDemoRepositories) {
       return {
         mode: 'mock',
         authRepository: new MockAuthRepository(),

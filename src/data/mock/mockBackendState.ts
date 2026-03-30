@@ -34,6 +34,10 @@ export class MockBackendState {
       endTime: new Date(Date.now() - 1000 * 60 * 60 * 25.5),
       energyWh: 420,
       elapsedSeconds: 60 * 30,
+      startSoC: 18,
+      finalSoC: 60,
+      soc: 60,
+      profile: 'scooter',
       stopReason: 'user_stop',
     },
     {
@@ -42,6 +46,10 @@ export class MockBackendState {
       endTime: new Date(Date.now() - 1000 * 60 * 60 * 4.8),
       energyWh: 180,
       elapsedSeconds: 60 * 12,
+      startSoC: 42,
+      finalSoC: 55,
+      soc: 55,
+      profile: 'bike',
       stopReason: 'charger_error',
     },
   ].sort((a, b) => b.startTime.getTime() - a.startTime.getTime());
@@ -69,8 +77,20 @@ export class MockBackendState {
     const endTime = new Date();
     const energyWh = this.currentEnergyWh;
     const elapsedSeconds = this.currentElapsedSeconds;
+    const finalSoC = Math.min(100, (energyWh / this.batteryCapacityWh) * 100);
 
-    this.sessions.unshift({ sessionId, startTime, endTime, energyWh, elapsedSeconds, stopReason: reason });
+    this.sessions.unshift({
+      sessionId,
+      startTime,
+      endTime,
+      energyWh,
+      elapsedSeconds,
+      startSoC: 0,
+      finalSoC,
+      soc: finalSoC,
+      profile: 'car',
+      stopReason: reason,
+    });
 
     this.chargerState = 'idle';
     this.currentSessionId = null;
@@ -79,7 +99,7 @@ export class MockBackendState {
     this.currentElapsedSeconds = 0;
   }
 
-  tick(): LiveChargingTelemetry {
+  private buildTelemetry(advance: boolean): LiveChargingTelemetry {
     // Simple/consistent physics-ish simulation for UI testing.
     const voltage = 230;
     const maxKw = Math.max(0.5, MAX_CHARGING_POWER_KW);
@@ -91,7 +111,7 @@ export class MockBackendState {
     const power = powerKw * 1000;
     const current = power / voltage;
 
-    if (this.chargerState === 'charging') {
+    if (advance && this.chargerState === 'charging') {
       this.currentElapsedSeconds += 1;
       this.currentEnergyWh += power / 3600;
     }
@@ -108,6 +128,14 @@ export class MockBackendState {
       batteryPercent,
       chargerState: this.chargerState === 'charging' ? 'charging' : 'idle',
     };
+  }
+
+  getLiveTelemetrySnapshot(): LiveChargingTelemetry {
+    return this.buildTelemetry(false);
+  }
+
+  tick(): LiveChargingTelemetry {
+    return this.buildTelemetry(true);
   }
 
   listSessions(): ChargingSession[] {

@@ -1,6 +1,17 @@
-import { getFirestore, collection, doc, getDoc, setDoc, query, where, getDocs, orderBy, limit } from '@react-native-firebase/firestore';
-import { getApp } from '@react-native-firebase/app';
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+  where,
+} from '@react-native-firebase/firestore';
 
+import { getFirestoreDb } from '../../config/firebase';
 import type { ChargerRepository, StartChargingResult } from '../../domain/repositories/chargerRepository';
 import type { ChargerState, ChargerStatus } from '../../domain/entities/charger';
 
@@ -17,41 +28,52 @@ function parseState(value: unknown): ChargerState {
   return 'unavailable';
 }
 
+function extractValue<T>(field: unknown, expectedType: string, fallback: T): T {
+  if (field === undefined || field === null) return fallback;
+  if (typeof field === 'object' && field !== null && expectedType in (field as Record<string, unknown>)) {
+    return ((field as Record<string, unknown>)[expectedType] as T | undefined) ?? fallback;
+  }
+  return field as T;
+}
+
+function toDateValue(value: unknown): Date {
+  if (!value) return new Date();
+  if (value instanceof Date) return value;
+  if (typeof value === 'string') return new Date(value);
+  if (typeof value === 'object' && value !== null && 'toDate' in value && typeof (value as { toDate: () => Date }).toDate === 'function') {
+    return (value as { toDate: () => Date }).toDate();
+  }
+  if (typeof value === 'object' && value !== null && 'seconds' in value && typeof (value as { seconds: number }).seconds === 'number') {
+    return new Date((value as { seconds: number }).seconds * 1000);
+  }
+  return new Date();
+}
+
 export class ChargerRepositoryFirestore implements ChargerRepository {
-  private readonly db = getFirestore(getApp());
+  private get db() {
+    return getFirestoreDb();
+  }
 
   async getStatus(): Promise<ChargerStatus> {
     const snap = await getDoc(doc(collection(this.db, 'device'), 'status'));
     if (!snap.exists()) {
       return { online: false, state: 'unavailable', lastUpdated: new Date() };
     }
-    const data = (snap.data() || {}) as any;
-    console.log('[DEBUG] Firestore device/status raw data:', JSON.stringify(data));
-    
-    // Helper to extract value regardless of whether it's nested (from ESP32) or flat
-    const extractValue = (field: any, expectedType: 'booleanValue' | 'timestampValue') => {
-      if (field === undefined || field === null) return undefined;
-      if (typeof field === 'object' && expectedType in field) {
-        return field[expectedType];
-      }
-      return field;
-    };
-
-    const relay = extractValue(data.relay, 'booleanValue');
-    const tsStr = extractValue(data.timestamp, 'timestampValue');
-    
-    // The ESP32 pushes an ISO string for timestamp, e.g. "2026-03-12T10:12:07Z"
-    // Or if it's a Firestore Timestamp, it has a toDate() function
-    const lastUpdated = tsStr 
-      ? (typeof tsStr === 'string' ? new Date(tsStr) : (typeof tsStr.toDate === 'function' ? tsStr.toDate() : new Date()))
-      : new Date();
-
-    const online = relay !== undefined;
+    const data = (snap.data() || {}) as Record<string, unknown>;
+    const relay = extractValue<boolean | string | undefined>(data.relay, 'booleanValue', undefined);
+    const timestampValue = extractValue<unknown>(data.timestamp, 'timestampValue', null);
+    const lastUpdated = toDateValue(timestampValue);
+    const online = Date.now() - lastUpdated.getTime() <= 30_000;
     const state = parseState(relay);
     return { online, state, lastUpdated };
   }
 
   async startCharging(): Promise<StartChargingResult> {
+    const statusSnap = await getDoc(doc(collection(this.db, 'device'), 'status'));
+    const statusData = (statusSnap.data() || {}) as Record<string, unknown>;
+    const startSoC = Number(extractValue(statusData.soc, 'doubleValue', 0));
+    const profile = String(extractValue(statusData.profile, 'stringValue', 'car'));
+
     // 1. Signal ESP32 to start
     await setDoc(
       doc(collection(this.db, 'device'), 'command'),
@@ -65,8 +87,10 @@ export class ChargerRepositoryFirestore implements ChargerRepository {
     await setDoc(newSessionRef, {
       startTime: new Date(),
       energyWh: 0,
-      status: 'in_progress',
-      stopReason: 'none'
+      status: 'active',
+      stopReason: 'none',
+      profile,
+      startSoC,
     });
     activeSessionId = newSessionRef.id;
 
@@ -83,14 +107,24 @@ export class ChargerRepositoryFirestore implements ChargerRepository {
 
     // 2. Fetch latest telemetry from device/status
     const snap = await getDoc(doc(collection(this.db, 'device'), 'status'));
-    let additionalData: Record<string, any> = {};
+    let additionalData: {
+      energyWh?: number;
+      elapsedSeconds?: number;
+      stopReason?: string;
+      soc?: number;
+      finalSoC?: number;
+      profile?: string;
+      carbonSavedGrams?: number;
+    } = {};
     if (snap.exists()) {
-      const data = snap.data() || {};
-      const ext = (field: any, type: string) => (field && typeof field === 'object' && type in field) ? field[type] : field;
-      const energyWh = ext(data.energyWh, 'doubleValue') || 0;
-      const elapsed = ext(data.elapsedSeconds, 'integerValue') || 0;
-      const stopReason = ext(data.stopReason, 'stringValue') || 'user_stop';
-      const soc = ext(data.soc, 'doubleValue') || 0;
+      const data = (snap.data() || {}) as Record<string, unknown>;
+      const energyWh = Number(extractValue(data.energyWh, 'doubleValue', 0));
+      const elapsed = Number(extractValue(data.elapsedSeconds, 'integerValue', 0));
+      const rawStopReason = String(extractValue(data.stopReason, 'stringValue', 'app'));
+      const stopReason =
+        rawStopReason === 'none' || rawStopReason.trim() === '' ? 'app' : rawStopReason;
+      const soc = Number(extractValue(data.soc, 'doubleValue', 0));
+      const profile = String(extractValue(data.profile, 'stringValue', 'car'));
       
       const carbonSavedGrams = energyWh * 0.8;
       
@@ -99,14 +133,16 @@ export class ChargerRepositoryFirestore implements ChargerRepository {
         elapsedSeconds: elapsed,
         stopReason,
         soc,
+        finalSoC: soc,
+        profile,
         carbonSavedGrams
       };
     }
 
     // 3. Terminate tracked session
     if (activeSessionId) {
-        const payload: any = { 
-          endTime: new Date(), 
+        const payload: Record<string, unknown> = { 
+          endTime: serverTimestamp(), 
           status: 'completed',
         };
         
@@ -114,6 +150,8 @@ export class ChargerRepositoryFirestore implements ChargerRepository {
         if (additionalData.elapsedSeconds !== undefined) payload.elapsedSeconds = additionalData.elapsedSeconds;
         if (additionalData.stopReason !== undefined) payload.stopReason = additionalData.stopReason;
         if (additionalData.soc !== undefined) payload.soc = additionalData.soc;
+        if (additionalData.finalSoC !== undefined) payload.finalSoC = additionalData.finalSoC;
+        if (additionalData.profile !== undefined) payload.profile = additionalData.profile;
         if (additionalData.carbonSavedGrams !== undefined) payload.carbonSavedGrams = additionalData.carbonSavedGrams;
 
         await setDoc(
@@ -123,20 +161,22 @@ export class ChargerRepositoryFirestore implements ChargerRepository {
         );
         activeSessionId = null;
     } else {
-      // 4. Recovery: Check if there's a stale in_progress session
-      const q = query(collection(this.db, 'charging_sessions'), where('status', '==', 'in_progress'), orderBy('startTime', 'desc'), limit(1));
+      // 4. Recovery: Check if there's a stale active session
+      const q = query(collection(this.db, 'charging_sessions'), where('status', '==', 'active'), orderBy('startTime', 'desc'), limit(1));
       const staleSnap = await getDocs(q);
       if (!staleSnap.empty) {
          const staleDocRef = staleSnap.docs[0].ref;
          
-         const payload: any = {
-           endTime: new Date(),
+         const payload: Record<string, unknown> = {
+           endTime: serverTimestamp(),
            status: 'completed',
          };
          if (additionalData.energyWh !== undefined) payload.energyWh = additionalData.energyWh;
          if (additionalData.elapsedSeconds !== undefined) payload.elapsedSeconds = additionalData.elapsedSeconds;
          if (additionalData.stopReason !== undefined) payload.stopReason = additionalData.stopReason;
          if (additionalData.soc !== undefined) payload.soc = additionalData.soc;
+         if (additionalData.finalSoC !== undefined) payload.finalSoC = additionalData.finalSoC;
+         if (additionalData.profile !== undefined) payload.profile = additionalData.profile;
          if (additionalData.carbonSavedGrams !== undefined) payload.carbonSavedGrams = additionalData.carbonSavedGrams;
 
          await setDoc(staleDocRef, payload, { merge: true });

@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View, Animated, Easing, ScrollView, TextInput } from 'react-native';
-import { getFirestore, collection, doc, setDoc } from '@react-native-firebase/firestore';
-import { getApp } from '@react-native-firebase/app';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View, Animated, Easing, ScrollView, TextInput } from 'react-native';
+import { collection, doc, setDoc } from '@react-native-firebase/firestore';
 import { Ionicons } from '@expo/vector-icons';
 
+import { getFirestoreDb } from '../../config/firebase';
 import { Screen } from '../components/Screen';
+import { Card } from '../components/Card';
+import { ErrorBanner } from '../components/ErrorBanner';
 import { theme } from '../theme/theme';
 import { useSensorData } from '../../hooks/useSensorData';
 import { useAuth } from '../../context/AuthContext';
@@ -20,11 +22,13 @@ function ProfileCard({
   profile, 
   isActive, 
   isLoading, 
+  isLocked,
   onSelect 
 }: { 
   profile: typeof profiles[number]; 
   isActive: boolean; 
   isLoading: boolean; 
+  isLocked: boolean;
   onSelect: () => void;
 }) {
   const scale = React.useRef(new Animated.Value(1)).current;
@@ -39,20 +43,26 @@ function ProfileCard({
   return (
     <Pressable
       onPress={onSelect}
-      disabled={isLoading}
+      disabled={isLoading || isLocked}
       onPressIn={handlePressIn}
       onPressOut={handlePressOut}
     >
       <Animated.View style={[
         styles.card,
         isActive && styles.cardActive,
+        isLocked && styles.cardLocked,
         { transform: [{ scale }] }
       ]}>
         <View style={styles.cardHeader}>
           <View style={[styles.iconWrap, isActive && styles.iconWrapActive]}>
             <Ionicons name={profile.icon as any} size={28} color={isActive ? theme.colors.primary : theme.colors.muted} />
           </View>
-          {isActive ? (
+          {isLocked ? (
+            <View style={styles.lockPill}>
+              <Ionicons name="lock-closed" size={14} color={theme.colors.muted} />
+              <Text style={styles.lockText}>Locked</Text>
+            </View>
+          ) : isActive ? (
             <View style={styles.activePill}>
               <Ionicons name="checkmark-circle" size={14} color="#fff" />
               <Text style={styles.activeText}>Active</Text>
@@ -82,11 +92,20 @@ export function VehicleProfileScreen() {
   const username = user?.displayName?.split(' ')[0] || user?.email?.split('@')[0] || 'User';
   const greeting = `Hi ${username.charAt(0).toUpperCase() + username.slice(1)},`;
 
-  const { data } = useSensorData();
+  const { data, loading, error } = useSensorData();
   const activeProfile = data?.profile ?? 'car';
   const currentTargetStr = data?.targetSoC?.toString() ?? '95';
   const [pending, setPending] = useState<string | null>(null);
   const [customTarget, setCustomTarget] = useState(currentTargetStr);
+  const isChargingActive = data?.relay ?? false;
+
+  if (loading && !data) {
+    return (
+      <Screen contentStyle={styles.centeredState}>
+        <ActivityIndicator size="large" color={theme.colors.primary} />
+      </Screen>
+    );
+  }
 
   const saveCustomTarget = async () => {
     const value = Number(customTarget);
@@ -96,7 +115,7 @@ export function VehicleProfileScreen() {
     }
     setPending('custom');
     try {
-      const db = getFirestore(getApp());
+      const db = getFirestoreDb();
       await setDoc(
         doc(collection(db, 'device'), 'command'),
         { profile: 'custom', targetSoC: value },
@@ -119,7 +138,7 @@ export function VehicleProfileScreen() {
     // Optimistic UI updates feel faster. The `pending` state covers real processing.
     setPending(profileId);
     try {
-      const db = getFirestore(getApp());
+      const db = getFirestoreDb();
       const target = profiles.find(p => p.id === profileId)?.target ?? 95;
 
       // 1. Issue command to the hardware (ESP32 Source of Truth)
@@ -154,6 +173,21 @@ export function VehicleProfileScreen() {
           </Text>
         </View>
 
+        {error ? <ErrorBanner message={error} /> : null}
+        {!data && !loading ? (
+          <Card style={styles.stateCard}>
+            <Ionicons name="car-outline" size={26} color={theme.colors.muted} />
+            <Text style={styles.stateTitle}>No charger profile data yet</Text>
+            <Text style={styles.stateText}>Once the charger reports telemetry, the active profile will appear here.</Text>
+          </Card>
+        ) : null}
+        {isChargingActive ? (
+          <Card style={styles.lockedBanner}>
+            <Ionicons name="lock-closed" size={18} color={theme.colors.warning} />
+            <Text style={styles.lockedBannerText}>Profile switching is disabled while charging is active.</Text>
+          </Card>
+        ) : null}
+
         <View style={styles.list}>
           {profiles.map((p) => (
             <ProfileCard
@@ -161,6 +195,7 @@ export function VehicleProfileScreen() {
               profile={p}
               isActive={activeProfile === p.id}
               isLoading={pending === p.id}
+              isLocked={isChargingActive}
               onSelect={() => void selectProfile(p.id)}
             />
           ))}
@@ -180,10 +215,12 @@ export function VehicleProfileScreen() {
               />
               <Pressable
                 style={styles.saveBtn}
-                disabled={pending === 'custom'}
+                disabled={pending === 'custom' || isChargingActive}
                 onPress={() => void saveCustomTarget()}
               >
-                <Text style={styles.saveBtnText}>{pending === 'custom' ? 'Saving...' : 'Set Target'}</Text>
+                <Text style={styles.saveBtnText}>
+                  {pending === 'custom' ? 'Saving...' : isChargingActive ? 'Locked' : 'Set Target'}
+                </Text>
               </Pressable>
             </View>
           </View>
@@ -194,6 +231,7 @@ export function VehicleProfileScreen() {
 }
 
 const styles = StyleSheet.create({
+  centeredState: { alignItems: 'center', justifyContent: 'center' },
   scrollContent: { paddingBottom: theme.spacing.xl },
   header: { marginBottom: theme.spacing.xl },
   h1: { color: theme.colors.text, fontSize: 32, fontWeight: '900', letterSpacing: -0.5 },
@@ -215,6 +253,9 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.primary,
     backgroundColor: 'rgba(29, 78, 216, 0.03)',
   },
+  cardLocked: {
+    opacity: 0.72,
+  },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   iconWrap: {
     width: 60, height: 60, borderRadius: 30, backgroundColor: theme.colors.card2,
@@ -226,6 +267,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, gap: 4
   },
   activeText: { color: '#fff', fontWeight: '800', fontSize: 12 },
+  lockPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.card2,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 4,
+  },
+  lockText: { color: theme.colors.muted, fontWeight: '800', fontSize: 12 },
   cardBody: { marginBottom: 16 },
   label: { fontSize: 24, fontWeight: '900', color: theme.colors.text },
   labelActive: { color: theme.colors.primary },
@@ -259,4 +310,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   saveBtnText: { color: theme.colors.onPrimary, fontWeight: '800', fontSize: 16 },
+  stateCard: {
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    marginBottom: theme.spacing.md,
+  },
+  stateTitle: { color: theme.colors.text, fontWeight: '900', fontSize: 16 },
+  stateText: { color: theme.colors.muted, fontWeight: '700', textAlign: 'center' },
+  lockedBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: theme.spacing.md,
+    backgroundColor: 'rgba(245,158,11,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(245,158,11,0.30)',
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.md,
+  },
+  lockedBannerText: { color: theme.colors.text, fontWeight: '700', flex: 1 },
 });

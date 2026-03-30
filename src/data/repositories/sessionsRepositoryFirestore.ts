@@ -1,11 +1,13 @@
-import { getFirestore, collection, doc, getDoc, getDocs, query, orderBy, limit } from '@react-native-firebase/firestore';
-import { getApp } from '@react-native-firebase/app';
+import { collection, doc, getDoc, getDocs, query, orderBy, limit } from '@react-native-firebase/firestore';
 
+import { getFirestoreDb } from '../../config/firebase';
 import type { SessionsRepository } from '../../domain/repositories/sessionsRepository';
 import type { ChargingSession } from '../../domain/entities/session';
 
 export class SessionsRepositoryFirestore implements SessionsRepository {
-  private readonly db = getFirestore(getApp());
+  private get db() {
+    return getFirestoreDb();
+  }
 
   async listSessions(): Promise<ChargingSession[]> {
     const q = query(
@@ -24,7 +26,9 @@ export class SessionsRepositoryFirestore implements SessionsRepository {
         energyWh: data.energyWh ?? 0,
         elapsedSeconds: data.elapsedSeconds,
         stopReason: data.stopReason,
-        soc: data.soc,
+        soc: data.finalSoC ?? data.soc,
+        startSoC: data.startSoC,
+        finalSoC: data.finalSoC ?? data.soc,
         profile: data.profile,
         carbonSavedGrams: data.carbonSavedGrams,
       };
@@ -42,9 +46,11 @@ export class SessionsRepositoryFirestore implements SessionsRepository {
       energyWh: data.energyWh ?? 0,
       elapsedSeconds: data.elapsedSeconds,
       stopReason: data.stopReason,
-      soc: data.soc,
+      soc: data.finalSoC ?? data.soc,
+      startSoC: data.startSoC,
+      finalSoC: data.finalSoC ?? data.soc,
       profile: data.profile,
-      carbonSavedKg: data.carbonSavedKg,
+      carbonSavedGrams: data.carbonSavedGrams,
     };
   }
 }

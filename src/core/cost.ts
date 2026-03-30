@@ -1,6 +1,5 @@
-export function estimateChargingCost(args: { energyWh: number; costPerKwh: number }): number {
-  const ratePerWh = (Number(args.costPerKwh) || 0) / 1000;
-  return args.energyWh * ratePerWh;
+export function estimateChargingCost(args: { energyWh: number; costPerWh: number }): number {
+  return (Number(args.energyWh) || 0) * (Number(args.costPerWh) || 0);
 }
 
 export function formatMoney(args: { amount: number; currencySymbol: string }): string {
@@ -8,4 +7,3 @@ export function formatMoney(args: { amount: number; currencySymbol: string }): s
   const symbol = args.currencySymbol || '$';
   return `${symbol}${amount.toFixed(2)}`;
 }
-

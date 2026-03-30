@@ -2,15 +2,12 @@ import React from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { GoogleSignin } from '@react-native-google-signin/google-signin';
 
 import { AppRoot } from './src/AppRoot';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
+import { googleWebClientId } from './src/config/firebase';
 import { LoginScreen } from './src/screens/LoginScreen';
-import { GoogleSignin } from '@react-native-google-signin/google-signin';
-
-GoogleSignin.configure({
-  webClientId: '553905450489-n6t3o23sj3hjbptj0t3nqs6b27cua0ro.apps.googleusercontent.com',
-});
 
 function AppContent() {
   const { user, loading } = useAuth();
@@ -31,6 +28,19 @@ function AppContent() {
 }
 
 export default function App() {
+  React.useEffect(() => {
+    if (!googleWebClientId) return;
+
+    // Google Sign-In is configured lazily so missing native modules do not crash app startup.
+    try {
+      GoogleSignin.configure({
+        webClientId: googleWebClientId,
+      });
+    } catch (error) {
+      console.warn('Google Sign-In configuration skipped:', error);
+    }
+  }, []);
+
   return (
     <SafeAreaProvider>
       <StatusBar style="dark" />

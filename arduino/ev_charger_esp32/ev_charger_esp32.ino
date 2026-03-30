@@ -7,7 +7,7 @@
     - ACS712 30A current sensor on pin 35 (0.066 V/A)
     - 25V voltage sensor module on pin 34
     - MAX17048 fuel gauge on I2C (SDA=21, SCL=22)
-    - Active buzzer module on pin 25 (low level trigger)
+    - Red warning LED on pin 25 (use a 220Ω series resistor)
     - Green LED on pin 14 (via 220Ω resistor)
 
   Required Libraries:
@@ -45,7 +45,7 @@
 #define CURRENT_PIN  35
 #define VOLTAGE_PIN  34
 #define LED_PIN      2
-#define BUZZER_PIN   25
+#define WARNING_LED_PIN 25
 #define GREEN_LED    14
 
 // ─────────────────────────────────────────────
@@ -54,6 +54,11 @@
 // ─────────────────────────────────────────────
 #define RELAY_ON  LOW
 #define RELAY_OFF HIGH
+
+// Warning LED polarity
+// If the red LED stays ON when it should be OFF, swap these two values.
+#define WARNING_LED_ON  HIGH
+#define WARNING_LED_OFF LOW
 
 // ─────────────────────────────────────────────
 //  CALIBRATION
@@ -69,6 +74,7 @@
 // ─────────────────────────────────────────────
 #define SENSOR_INTERVAL_MS  5000
 #define COMMAND_POLL_MS     2000
+#define SOC_COMPLETE_RESET_MS 4000
 
 // ─────────────────────────────────────────────
 //  CHARGING STOP REASONS
@@ -102,14 +108,18 @@ bool ledState        = false;
 bool greenBlinking   = false;
 bool greenBlinkState = false;
 
-// Prevents app from turning relay back ON after auto-stop
-// Must be manually reset by user tapping Start in app
+// Holds the charger in "complete" state briefly after SoC auto-stop,
+// then clears the latch so the next tap starts a brand-new session.
 bool socStopActive   = false;
+unsigned long socCompletionReadyMs = 0;
 
 String currentProfile      = "car";
 float  targetSoC           = 95.0;
+float  tempLimitC          = TEMP_LIMIT;
 String stopReason          = STOP_REASON_APP; // app on boot = idle state
 float  accumulatedEnergyWh = 0.0;
+bool   warningIndicatorActive = false;
+bool   overheatAckPending  = false;
 
 // ─────────────────────────────────────────────
 //  BUILT-IN LED HELPERS
@@ -161,11 +171,23 @@ void handleGreenBlink() {
 }
 
 // ─────────────────────────────────────────────
-//  BUZZER
-//  Low level trigger module — LOW = ON, HIGH = OFF
+//  RED WARNING LED
+//  Active HIGH — lights during protected overheat warning
 // ─────────────────────────────────────────────
-void setBuzzer(bool on) {
-  digitalWrite(BUZZER_PIN, on ? LOW : HIGH);
+void setWarningIndicator(bool on) {
+  warningIndicatorActive = on;
+  digitalWrite(WARNING_LED_PIN, on ? WARNING_LED_ON : WARNING_LED_OFF);
+}
+
+void syncWarningIndicator() {
+  // Red LED should be ON only for an active overheat warning,
+  // and stay ON until the user acknowledges that warning in the app.
+  bool shouldBeOn = (!relayState &&
+                     overheatAckPending &&
+                     stopReason == STOP_REASON_OVERHEAT);
+  if (shouldBeOn != warningIndicatorActive) {
+    setWarningIndicator(shouldBeOn);
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -298,6 +320,31 @@ void writeRelayCommandToFirebase(bool state) {
   }
 }
 
+void writeWarningAcknowledgedToFirebase(bool state) {
+  FirebaseJson content;
+  content.set("fields/warningAcknowledged/booleanValue", state);
+  String mask = "warningAcknowledged";
+  if (Firebase.Firestore.patchDocument(&fbdo, FIREBASE_PROJECT_ID, "",
+      "device/command", content.raw(), mask.c_str())) {
+    Serial.printf("[Firebase] device/command warningAcknowledged → %s ✓\n",
+                  state ? "true" : "false");
+  } else {
+    Serial.printf("[Firebase] warningAcknowledged FAILED: %s\n",
+                  fbdo.errorReason().c_str());
+  }
+}
+
+void clearOverheatWarningState() {
+  overheatAckPending = false;
+  socStopActive = false;
+  stopReason = STOP_REASON_NONE;
+  setGreenLED(false);
+  setWarningIndicator(false);
+  writeRelayCommandToFirebase(false);
+  writeWarningAcknowledgedToFirebase(false);
+  Serial.println("[Safety] Overheat warning acknowledged — red warning LED off");
+}
+
 // ─────────────────────────────────────────────
 //  RELAY CONTROL
 //  Way 1 — App button:      setRelay(true/false, STOP_REASON_APP)
@@ -312,52 +359,79 @@ void setRelay(bool on, String reason) {
   if (on) {
     // Reset all stop flags when user manually starts charging
     socStopActive        = false;
+    socCompletionReadyMs = 0;
+    overheatAckPending   = false;
     stopReason           = STOP_REASON_NONE;
     sessionStartMs       = millis();
     accumulatedEnergyWh  = 0.0;
     lastEnergyUpdateMs   = millis();
     setGreenLED(true);
-    setBuzzer(false);
+    setWarningIndicator(false);
+    writeWarningAcknowledgedToFirebase(false);
     Serial.println("[Relay] ON — charging started");
 
   } else {
     stopReason = reason;
 
     if (reason == STOP_REASON_SOC) {
-      socStopActive = true;   // lock relay — prevent app from overriding
+      socStopActive = true;   // show "complete" state briefly before resetting
+      socCompletionReadyMs = millis() + SOC_COMPLETE_RESET_MS;
+      overheatAckPending = false;
       startGreenBlink();
-      setBuzzer(false);
+      setWarningIndicator(false);
       Serial.printf("[Relay] OFF — SoC target %.0f%% reached\n", targetSoC);
       writeRelayCommandToFirebase(false);
 
     } else if (reason == STOP_REASON_OVERHEAT) {
       socStopActive = true;   // lock relay during overheat too
+      socCompletionReadyMs = 0;
+      overheatAckPending = true;
       setGreenLED(false);
-      setBuzzer(true);
-      Serial.println("[Relay] OFF — OVERHEAT safety cutoff");
+      setWarningIndicator(true);
+      writeWarningAcknowledgedToFirebase(false);
+      Serial.printf("[Relay] OFF — OVERHEAT safety cutoff (limit %.1f°C)\n", tempLimitC);
       writeRelayCommandToFirebase(false);
 
     } else if (reason == STOP_REASON_OVERDISCHARGE) {
       socStopActive = true;   // lock relay during overdischarge too
+      socCompletionReadyMs = 0;
+      overheatAckPending = false;
       setGreenLED(false);
-      setBuzzer(true);
+      setWarningIndicator(false);
       Serial.println("[Relay] OFF — OVER-DISCHARGE protection triggered");
       writeRelayCommandToFirebase(false);
 
     } else if (reason == STOP_REASON_APP) {
       socStopActive = false;  // user stopped — allow restart
+      socCompletionReadyMs = 0;
+      overheatAckPending = false;
       setGreenLED(false);
-      setBuzzer(false);
+      setWarningIndicator(false);
       Serial.println("[Relay] OFF — stopped by app");
 
     } else {
       socStopActive = false;
+      socCompletionReadyMs = 0;
+      overheatAckPending = false;
       setGreenLED(false);
-      setBuzzer(false);
+      setWarningIndicator(false);
       Serial.println("[Relay] OFF");
       writeRelayCommandToFirebase(false);
     }
   }
+}
+
+void clearSocCompletionState() {
+  if (!socStopActive || stopReason != STOP_REASON_SOC) return;
+
+  socStopActive = false;
+  socCompletionReadyMs = 0;
+  overheatAckPending = false;
+  stopReason = STOP_REASON_NONE;
+  setGreenLED(false);
+  setWarningIndicator(false);
+  writeRelayCommandToFirebase(false);
+  Serial.println("[Relay] SoC completion state cleared — ready for next session");
 }
 
 // ─────────────────────────────────────────────
@@ -375,8 +449,11 @@ void pushStatus(float temperature, float voltage,
   content.set("fields/relay/booleanValue",      relayState);
   content.set("fields/profile/stringValue",     currentProfile);
   content.set("fields/targetSoC/doubleValue",   targetSoC);
+  content.set("fields/tempLimit/doubleValue",   tempLimitC);
   content.set("fields/stopReason/stringValue",  stopReason);
   content.set("fields/socStopActive/booleanValue", socStopActive);
+  // Keep the legacy Firestore field name for app compatibility.
+  content.set("fields/buzzerActive/booleanValue", warningIndicatorActive);
 
   content.set("fields/energyWh/doubleValue",
     accumulatedEnergyWh);
@@ -396,7 +473,7 @@ void pushStatus(float temperature, float voltage,
   content.set("fields/timestamp/timestampValue", timeBuf);
 
   String mask = "temperature,voltage,current,power,relay,timestamp,"
-                "soc,profile,targetSoC,stopReason,socStopActive,"
+                "soc,profile,targetSoC,tempLimit,stopReason,socStopActive,buzzerActive,"
                 "energyWh,elapsedSeconds,"
                 "faultTemp,faultVoltage,faultCurrent,faultSoC";
 
@@ -452,6 +529,34 @@ void pullRelayCommand() {
     targetSoC = targetField.intValue;
   }
 
+  // Read custom temperature limit from the app settings
+  FirebaseJsonData tempLimitField;
+  float nextTempLimit = tempLimitC;
+  if (payload.get(tempLimitField, "fields/tempLimit/doubleValue")) {
+    nextTempLimit = tempLimitField.doubleValue;
+  } else if (payload.get(tempLimitField, "fields/tempLimit/integerValue")) {
+    nextTempLimit = tempLimitField.intValue;
+  }
+  if (nextTempLimit < 30.0) nextTempLimit = 30.0;
+  if (nextTempLimit > 60.0) nextTempLimit = 60.0;
+  if ((nextTempLimit - tempLimitC > 0.05) || (tempLimitC - nextTempLimit > 0.05)) {
+    tempLimitC = nextTempLimit;
+    Serial.printf("[Settings] Temperature limit updated to %.1f°C\n", tempLimitC);
+  }
+
+  // Read app acknowledgement so the buzzer keeps ringing until the warning is seen.
+  FirebaseJsonData warningAckField;
+  if (payload.get(warningAckField, "fields/warningAcknowledged/booleanValue")) {
+    bool warningAcknowledged = warningAckField.boolValue;
+    if (warningAcknowledged) {
+      if (overheatAckPending && !relayState) {
+        clearOverheatWarningState();
+      } else {
+        writeWarningAcknowledgedToFirebase(false);
+      }
+    }
+  }
+
   // Read relay command — Way 1 (app control)
   FirebaseJsonData relayField;
   if (payload.get(relayField, "fields/relay/booleanValue")) {
@@ -493,9 +598,9 @@ void setup() {
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, RELAY_OFF);
 
-  // Buzzer — ensure OFF on boot
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, HIGH);
+  // Red warning LED — ensure OFF on boot
+  pinMode(WARNING_LED_PIN, OUTPUT);
+  digitalWrite(WARNING_LED_PIN, WARNING_LED_OFF);
 
   // Green LED — ensure OFF on boot
   pinMode(GREEN_LED, OUTPUT);
@@ -558,6 +663,19 @@ void loop() {
 
   unsigned long now = millis();
 
+  // After a successful SoC stop, briefly show "complete", then
+  // clear the latch so the charger is ready for a fresh session.
+  if (!relayState &&
+      socStopActive &&
+      stopReason == STOP_REASON_SOC &&
+      socCompletionReadyMs > 0 &&
+      now >= socCompletionReadyMs) {
+    clearSocCompletionState();
+  }
+
+  // Keep the red LED tied strictly to the active overheat warning state.
+  syncWarningIndicator();
+
   // ── Read sensors and push data ──────────────
   if (now - lastSensorMs >= SENSOR_INTERVAL_MS) {
     lastSensorMs = now;
@@ -592,10 +710,13 @@ void loop() {
     else Serial.printf("  Power:       %.2f W\n", power);
     if (soc == -999.0) Serial.println("  SoC:         FAULT");
     else Serial.printf("  SoC:         %.1f %%\n", soc);
+    Serial.printf("  Temp Limit:  %.1f°C\n", tempLimitC);
     Serial.printf("  Energy:      %.4f Wh\n", accumulatedEnergyWh);
     Serial.printf("  Relay:       %s\n", relayState ? "ON" : "OFF");
     Serial.printf("  SocStop:     %s\n", socStopActive ? "LOCKED" : "unlocked");
     Serial.printf("  Stop Reason: %s\n", stopReason.c_str());
+    Serial.printf("  Warning LED: %s\n", warningIndicatorActive ? "ON" : "OFF");
+    Serial.printf("  Ack Pending: %s\n", overheatAckPending ? "YES" : "NO");
     Serial.printf("  Profile:     %s (target %.0f%%)\n",
                   currentProfile.c_str(), targetSoC);
     Serial.println("-------------------------------");
@@ -608,10 +729,10 @@ void loop() {
     }
 
     // ── WAY 3: Overheat safety ──────────────────
-    if (temperature != -999.0 && temperature > TEMP_LIMIT && relayState) {
+    if (temperature != -999.0 && temperature > tempLimitC && relayState) {
       setRelay(false, STOP_REASON_OVERHEAT);
-      Serial.printf("[SAFETY] ⚠ Temperature %.1f°C exceeded limit\n",
-                    temperature);
+      Serial.printf("[SAFETY] ⚠ Temperature %.1f°C exceeded limit %.1f°C\n",
+                    temperature, tempLimitC);
     }
 
     // ── WAY 2: Auto-stop when SoC target reached
@@ -633,9 +754,10 @@ void loop() {
     tempSensor.requestTemperatures();
     float tempCheck = tempSensor.getTempCByIndex(0);
     if (tempCheck != DEVICE_DISCONNECTED_C &&
-        tempCheck > TEMP_LIMIT && relayState) {
+        tempCheck > tempLimitC && relayState) {
       setRelay(false, STOP_REASON_OVERHEAT);
-      Serial.println("[SAFETY] ⚠ Overheat after app command — relay forced OFF");
+      Serial.printf("[SAFETY] ⚠ Overheat after app command — %.1f°C over %.1f°C\n",
+                    tempCheck, tempLimitC);
     }
 
     // Over-discharge re-check after app command

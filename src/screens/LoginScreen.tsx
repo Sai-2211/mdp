@@ -5,11 +5,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 
 export function LoginScreen() {
-  const { signIn, signUp, signInWithGoogle, loading, error } = useAuth();
+  const { signIn, signUp, signInWithGoogle, loading, error, mode, statusMessage, canUseGoogleSignIn } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const showGoogleSignIn = mode === 'firebase';
 
   const handleSignIn = async () => {
     if (!email || !password) {
@@ -33,6 +34,12 @@ export function LoginScreen() {
     }
   };
 
+  const handleGoogleSignIn = async () => {
+    setLocalError(null);
+    const res = await signInWithGoogle();
+    if (res) setLocalError(res);
+  };
+
   const errText = localError ?? error;
 
   return (
@@ -46,7 +53,10 @@ export function LoginScreen() {
           autoCapitalize="none"
           keyboardType="email-address"
           value={email}
-          onChangeText={setEmail}
+          onChangeText={(value) => {
+            setEmail(value);
+            if (localError) setLocalError(null);
+          }}
         />
         <Text style={styles.hint}>Format: user@example.com</Text>
 
@@ -56,7 +66,10 @@ export function LoginScreen() {
             placeholder="Password"
             secureTextEntry={!showPassword}
             value={password}
-            onChangeText={setPassword}
+            onChangeText={(value) => {
+              setPassword(value);
+              if (localError) setLocalError(null);
+            }}
           />
           <TouchableOpacity onPress={() => setShowPassword(!showPassword)} style={styles.eyeIcon}>
             <Ionicons name={showPassword ? 'eye-off' : 'eye'} size={22} color="#64748b" />
@@ -66,25 +79,50 @@ export function LoginScreen() {
 
         {loading ? <ActivityIndicator style={{ marginVertical: 12 }} /> : null}
         {errText ? <Text style={styles.error}>{errText}</Text> : null}
+        {statusMessage ? <Text style={styles.info}>{statusMessage}</Text> : null}
+        {mode === 'demo' ? <Text style={styles.hint}>Use any email and password to enter the demo app.</Text> : null}
 
         <View style={styles.actions}>
-          <TouchableOpacity style={styles.button} onPress={handleSignIn}>
+          <TouchableOpacity style={styles.button} onPress={handleSignIn} disabled={loading}>
             <Text style={styles.buttonText}>Sign In</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.button, styles.secondary]} onPress={handleSignUp}>
+          <TouchableOpacity style={[styles.button, styles.secondary]} onPress={handleSignUp} disabled={loading}>
             <Text style={styles.buttonText}>Create Account</Text>
           </TouchableOpacity>
           
-          <View style={styles.divider}>
-            <View style={styles.dividerLine} />
-            <Text style={styles.dividerText}>OR</Text>
-            <View style={styles.dividerLine} />
-          </View>
+          {showGoogleSignIn ? (
+            <>
+              <View style={styles.divider}>
+                <View style={styles.dividerLine} />
+                <Text style={styles.dividerText}>OR</Text>
+                <View style={styles.dividerLine} />
+              </View>
 
-          <TouchableOpacity style={[styles.button, styles.googleButton]} onPress={signInWithGoogle}>
-            <Ionicons name="logo-google" size={18} color="#fff" style={{ marginRight: 8 }} />
-            <Text style={styles.buttonText}>Sign in with Google</Text>
-          </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.button,
+                  styles.googleButton,
+                  !canUseGoogleSignIn || loading ? styles.buttonDisabled : null,
+                ]}
+                onPress={handleGoogleSignIn}
+                disabled={!canUseGoogleSignIn || loading}
+              >
+                <Ionicons
+                  name="logo-google"
+                  size={18}
+                  color="#fff"
+                  style={{ marginRight: 8, opacity: !canUseGoogleSignIn || loading ? 0.8 : 1 }}
+                />
+                <Text style={styles.buttonText}>Sign in with Google</Text>
+              </TouchableOpacity>
+
+              {!canUseGoogleSignIn ? (
+                <Text style={styles.info}>
+                  Google Sign-In needs `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` in your app config and a fresh native build.
+                </Text>
+              ) : null}
+            </>
+          ) : null}
         </View>
       </View>
     </KeyboardAvoidingView>
@@ -144,12 +182,14 @@ const styles = StyleSheet.create({
   },
   secondary: { backgroundColor: '#0f172a' },
   googleButton: { backgroundColor: '#ea4335' },
+  buttonDisabled: { opacity: 0.72 },
   buttonText: {
     fontWeight: '800',
     color: '#fff',
     fontSize: 16,
   },
   error: { color: '#ef4444', fontWeight: '700', marginVertical: 8, textAlign: 'center' },
+  info: { color: '#1d4ed8', fontWeight: '700', marginVertical: 8, textAlign: 'center' },
   divider: { flexDirection: 'row', alignItems: 'center', marginVertical: 4 },
   dividerLine: { flex: 1, height: 1, backgroundColor: '#e2e8f0' },
   dividerText: { marginHorizontal: 12, color: '#64748b', fontWeight: '600', fontSize: 13 },

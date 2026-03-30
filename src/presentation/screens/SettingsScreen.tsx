@@ -1,31 +1,54 @@
-import React, { useMemo, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
-import { getFirestore, collection, doc, setDoc } from '@react-native-firebase/firestore';
-import { getApp } from '@react-native-firebase/app';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { collection, doc, setDoc } from '@react-native-firebase/firestore';
 
+import { getFirestoreDb } from '../../config/firebase';
 import { Card } from '../components/Card';
+import { ErrorBanner } from '../components/ErrorBanner';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { Screen } from '../components/Screen';
 import { StatusPill } from '../components/StatusPill';
 import { theme } from '../theme/theme';
 import { useSensorData } from '../../hooks/useSensorData';
 
+function getTimestampMs(timestamp: unknown): number | null {
+  if (!timestamp) return null;
+  if (timestamp instanceof Date) return timestamp.getTime();
+  if (typeof timestamp === 'string') return new Date(timestamp).getTime();
+  if (typeof timestamp === 'object' && timestamp !== null && 'toDate' in (timestamp as { toDate?: () => Date }) && typeof (timestamp as { toDate?: () => Date }).toDate === 'function') {
+    return (timestamp as { toDate: () => Date }).toDate().getTime();
+  }
+  if (typeof timestamp === 'object' && timestamp !== null && 'seconds' in (timestamp as { seconds?: number }) && typeof (timestamp as { seconds?: number }).seconds === 'number') {
+    return (timestamp as { seconds: number }).seconds * 1000;
+  }
+  return null;
+}
+
 export function SettingsScreen() {
-  const { data } = useSensorData();
+  const { data, loading, error } = useSensorData();
 
   // ── Temperature limit slider ──
   const [tempLimit, setTempLimit] = useState(40);
   const [tempSaving, setTempSaving] = useState(false);
+  const hasLoadedTempLimit = useRef(false);
+
+  useEffect(() => {
+    if (hasLoadedTempLimit.current) return;
+    if (typeof data?.tempLimit !== 'number' || !Number.isFinite(data.tempLimit)) return;
+    setTempLimit(Math.round(data.tempLimit));
+    hasLoadedTempLimit.current = true;
+  }, [data?.tempLimit]);
 
   const saveTempLimit = async () => {
     setTempSaving(true);
     try {
-      const db = getFirestore(getApp());
+      const db = getFirestoreDb();
       await setDoc(
         doc(collection(db, 'device'), 'command'),
         { tempLimit },
         { merge: true },
       );
+      Alert.alert('Saved', `Temperature limit updated to ${tempLimit}°C.`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Failed to save';
       Alert.alert('Error', msg);
@@ -36,26 +59,38 @@ export function SettingsScreen() {
 
   // ── ESP32 online status ──
   const isOnline = useMemo(() => {
-    if (!data?.timestamp) return false;
-    const ts = data.timestamp;
-    let lastMs: number;
-    if (typeof ts === 'string') {
-      lastMs = new Date(ts).getTime();
-    } else if (ts && typeof (ts as any).toDate === 'function') {
-      lastMs = (ts as any).toDate().getTime();
-    } else if (ts && typeof (ts as any).seconds === 'number') {
-      lastMs = (ts as any).seconds * 1000;
-    } else {
-      return false;
-    }
+    const lastMs = getTimestampMs(data?.timestamp);
+    if (!lastMs) return false;
     return Date.now() - lastMs < 30000;
   }, [data?.timestamp]);
+
+  const lastSeenSeconds = useMemo(() => {
+    const lastMs = getTimestampMs(data?.timestamp);
+    if (!lastMs) return null;
+    return Math.max(0, Math.round((Date.now() - lastMs) / 1000));
+  }, [data?.timestamp]);
+
+  if (loading && !data) {
+    return (
+      <Screen contentStyle={styles.centeredState}>
+        <ActivityIndicator size="large" color={theme.colors.primary} />
+      </Screen>
+    );
+  }
 
   // ── Custom SoC target logic moved to VehicleProfileScreen ──
 
   return (
     <Screen>
       <Text style={styles.h1}>Settings</Text>
+
+      {error ? <ErrorBanner message={error} /> : null}
+      {!data && !loading ? (
+        <Card style={styles.stateCard}>
+          <Text style={styles.cardTitle}>No status yet</Text>
+          <Text style={styles.hint}>The charger has not reported telemetry yet. Connect the ESP32 and try again.</Text>
+        </Card>
+      ) : null}
 
       {/* Online status */}
       <Card style={[styles.card, { marginTop: theme.spacing.md }]}>
@@ -66,12 +101,14 @@ export function SettingsScreen() {
         <Text style={styles.hint}>
           {isOnline ? 'The charger is connected and sending data.' : 'Last update was more than 30 seconds ago.'}
         </Text>
+        <Text style={styles.hint}>{lastSeenSeconds == null ? 'Last seen —' : `Last seen ${lastSeenSeconds} seconds ago`}</Text>
       </Card>
 
       {/* Temperature limit */}
       <Card style={[styles.card, { marginTop: theme.spacing.md }]}>
         <Text style={styles.cardTitle}>Temperature Limit</Text>
         <Text style={styles.hint}>Auto-stop charging above this temperature.</Text>
+        <Text style={styles.hint}>Selected limit: {tempLimit.toFixed(0)}°C</Text>
         <Text style={styles.sliderValue}>{tempLimit}°C</Text>
         <View style={styles.stepperRow}>
           <Pressable
@@ -99,6 +136,7 @@ export function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
+  centeredState: { alignItems: 'center', justifyContent: 'center' },
   h1: { color: theme.colors.text, fontSize: 22, fontWeight: '900' },
   card: {
     gap: theme.spacing.sm,
@@ -148,5 +186,9 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 4,
     backgroundColor: theme.colors.primary,
+  },
+  stateCard: {
+    gap: theme.spacing.sm,
+    marginTop: theme.spacing.md,
   },
 });

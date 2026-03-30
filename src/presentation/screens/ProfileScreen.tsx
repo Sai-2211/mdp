@@ -46,7 +46,7 @@ export function ProfileScreen() {
             <Ionicons name="cash" size={24} color={theme.colors.success} />
           </View>
           <Text style={styles.statValue}>
-            {formatMoney({ amount: estimateChargingCost({ energyWh: vm.totalEnergyWh, costPerKwh: appConfig.costPerKwh }), currencySymbol: appConfig.currencySymbol })}
+            {formatMoney({ amount: estimateChargingCost({ energyWh: vm.totalEnergyWh, costPerWh: appConfig.costPerWh }), currencySymbol: appConfig.currencySymbol })}
           </Text>
           <Text style={styles.statLabel}>Total Cost</Text>
         </Card>

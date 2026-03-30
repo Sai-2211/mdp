@@ -30,6 +30,7 @@ const BATTERY_CAPACITY_WH = Math.max(
 // Indian AC001-style home charger default (≈3.3 kW). Override via env if needed.
 const MAX_CHARGING_POWER_KW = Math.max(0.1, envNumber(process.env.EXPO_PUBLIC_MAX_CHARGING_POWER_KW, 3.3));
 const MAX_INTEGRATION_SECONDS = Math.max(1, envNumber(process.env.EXPO_PUBLIC_MAX_INTEGRATION_SECONDS, 8));
+const SESSION_COMPLETE_HOLD_MS = 4000;
 
 type LiveConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -364,15 +365,18 @@ function SecondaryMetric({
   label,
   valueText,
   unit,
+  warning = false,
 }: {
   label: string;
   valueText: string;
   unit: string;
+  warning?: boolean;
 }) {
   return (
     <View style={styles.metric}>
       <Text style={styles.metricLabel}>{label}</Text>
       <View style={styles.metricValueRow}>
+        {warning ? <Ionicons name="warning" size={14} color={theme.colors.danger} /> : null}
         <AnimatedValueText text={valueText} style={styles.metricValue} />
         {unit ? <Text style={styles.metricUnit}>{unit}</Text> : null}
       </View>
@@ -511,7 +515,7 @@ function ChargingControls({
   const [pending, setPending] = useState<'start' | 'stop' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const canStart = chargerState !== 'charging' && pending == null;
+  const canStart = chargerState === 'idle' && pending == null;
   const canStop = chargerState === 'charging' && pending == null;
 
   const handleStart = async () => {
@@ -676,12 +680,19 @@ function PowerChartCard({ store }: { store: LiveChargingStore }) {
   );
 }
 
-function LiveSoCGauge({ soc, targetSoC }: { soc: number; targetSoC: number }) {
+function LiveSoCGauge({ soc, targetSoC, isFault }: { soc: number; targetSoC: number; isFault: boolean }) {
   const percent = clamp01(soc / 100);
   const size = 130;
   const stroke = 10;
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
+  const ringColor = isFault
+    ? theme.colors.muted
+    : soc <= 20
+      ? theme.colors.danger
+      : soc <= 60
+        ? theme.colors.warning
+        : theme.colors.success;
 
   const dashOffset = useRef(new Animated.Value(c)).current;
   useEffect(() => {
@@ -702,14 +713,26 @@ function LiveSoCGauge({ soc, targetSoC }: { soc: number; targetSoC: number }) {
           <Circle cx={size / 2} cy={size / 2} r={r} stroke={theme.colors.border} strokeWidth={stroke} fill="none" />
           <AnimatedCircle
             cx={size / 2} cy={size / 2} r={r}
-            stroke={theme.colors.success} strokeWidth={stroke} strokeLinecap="round" fill="none"
+            stroke={ringColor} strokeWidth={stroke} strokeLinecap="round" fill="none"
             strokeDasharray={`${c} ${c}`} strokeDashoffset={dashOffset}
             transform={`rotate(-90 ${size / 2} ${size / 2})`}
           />
         </Svg>
         <View style={{ position: 'absolute', alignItems: 'center' }}>
-          <AnimatedValueText text={`${soc.toFixed(1)}%`} style={{ color: theme.colors.text, fontWeight: '900', fontSize: 24 }} />
-          <Text style={{ color: theme.colors.muted, fontWeight: '800', fontSize: 11, marginTop: 2 }}>SoC</Text>
+          {isFault ? (
+            <>
+              <Text style={{ color: theme.colors.muted, fontWeight: '900', fontSize: 24 }}>–– %</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                <Ionicons name="warning" size={12} color={theme.colors.danger} />
+                <Text style={{ color: theme.colors.danger, fontWeight: '800', fontSize: 11 }}>SoC fault</Text>
+              </View>
+            </>
+          ) : (
+            <>
+              <AnimatedValueText text={`${soc.toFixed(1)}%`} style={{ color: theme.colors.text, fontWeight: '900', fontSize: 24 }} />
+              <Text style={{ color: theme.colors.muted, fontWeight: '800', fontSize: 11, marginTop: 2 }}>SoC</Text>
+            </>
+          )}
         </View>
       </View>
       <Text style={{ color: theme.colors.muted, fontWeight: '700', marginTop: 8 }}>Target: {targetSoC.toFixed(1)}%</Text>
@@ -720,32 +743,90 @@ function LiveSoCGauge({ soc, targetSoC }: { soc: number; targetSoC: number }) {
 export function LiveChargingScreen() {
   const { data, loading, error: sensorError } = useSensorData();
   const { chargerRepository } = useRepositories();
-  const autoStopInFlightRef = useRef(false);
+  const [uiStopReason, setUiStopReason] = useState<string | null>(null);
+  const completionResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (data?.relay) {
+      if (completionResetTimer.current) {
+        clearTimeout(completionResetTimer.current);
+        completionResetTimer.current = null;
+      }
+      setUiStopReason(null);
+      return;
+    }
+
+    if (data?.stopReason === 'soc_reached') {
+      setUiStopReason('soc_reached');
+      return;
+    }
+
+    if (data?.stopReason && data.stopReason !== 'none' && data.stopReason !== 'app') {
+      if (completionResetTimer.current) {
+        clearTimeout(completionResetTimer.current);
+        completionResetTimer.current = null;
+      }
+      setUiStopReason(data.stopReason);
+      return;
+    }
+
+    if (!completionResetTimer.current) {
+      setUiStopReason(null);
+    }
+  }, [data?.relay, data?.stopReason]);
+
+  useEffect(() => {
+    if (uiStopReason !== 'soc_reached') {
+      if (completionResetTimer.current) {
+        clearTimeout(completionResetTimer.current);
+        completionResetTimer.current = null;
+      }
+      return;
+    }
+
+    completionResetTimer.current = setTimeout(() => {
+      completionResetTimer.current = null;
+      setUiStopReason(null);
+    }, SESSION_COMPLETE_HOLD_MS);
+
+    return () => {
+      if (completionResetTimer.current) {
+        clearTimeout(completionResetTimer.current);
+        completionResetTimer.current = null;
+      }
+    };
+  }, [uiStopReason]);
 
   // Derive all data from the Firestore sensor payload
   const connectionState: LiveConnectionState = loading ? 'connecting' : sensorError ? 'error' : data ? 'connected' : 'disconnected';
   const dataWarning = false;
-  const chargerState = data?.relay ? 'charging' : 'idle';
+  const chargerState = data?.relay ? 'charging' : uiStopReason === 'soc_reached' ? 'finished' : 'idle';
   const soc = data?.soc ?? 0;
   const targetSoC = data?.targetSoC ?? 95;
   const temperature = data?.temperature ?? 0;
-  const sessionId = null;
-  const chargingStartTimestamp = null;
+  const overheatLimit = data?.tempLimit ?? 40;
 
   // Real values from the ESP32
-  const powerKW = data?.power ?? 0; // ESP32 sends W, app expects Watts visually now
+  const powerW = data?.power ?? 0;
+  const powerKW = powerW / 1000;
   const voltage = data?.voltage ?? 0;
   const current = data?.current ?? 0;
-  const energyWh = 0; // Not available from instantaneous sensor data alone yet
-  const elapsedSeconds = 0;
+  const energyWh = data?.energyWh ?? 0;
+  const elapsedSeconds = data?.elapsedSeconds ?? 0;
 
   // Derived banners
-  const isChargingComplete = soc >= targetSoC && !data?.relay;
-  const isOverheating = temperature > 40 && temperature !== -999;
+  const isChargingComplete = uiStopReason === 'soc_reached';
+  const isOverheating = uiStopReason === 'overheat' || (temperature > overheatLimit && !data?.faultTemp);
 
-  useEffect(() => {
-    // Safety auto-stop is disabled for the prototype until energy tracking is added
-  }, [soc, chargerState, sessionId, chargingStartTimestamp, chargerRepository]);
+  const handleStart = async () => {
+    setUiStopReason(null);
+    await chargerRepository.startCharging();
+  };
+
+  const handleStop = async () => {
+    setUiStopReason('app');
+    await chargerRepository.stopCharging();
+  };
 
   return (
     <Screen>
@@ -780,8 +861,8 @@ export function LiveChargingScreen() {
           <View style={{ flex: 1, marginTop: theme.spacing.md }}>
             <ChargingControls 
               chargerState={chargerState} 
-              onStart={async () => { await chargerRepository.startCharging(); }} 
-              onStop={async () => { await chargerRepository.stopCharging(); }} 
+              onStart={handleStart} 
+              onStop={handleStop} 
             />
           </View>
         </View>
@@ -790,7 +871,7 @@ export function LiveChargingScreen() {
       {/* ── SoC Gauge ── */}
       <Card style={[styles.cardShadow, { marginTop: theme.spacing.md, alignItems: 'center' as const }]}>
         <Text style={styles.sectionTitle}>Battery SoC</Text>
-        <LiveSoCGauge soc={soc} targetSoC={targetSoC} />
+        <LiveSoCGauge soc={soc} targetSoC={targetSoC} isFault={data?.faultSoC ?? false} />
       </Card>
 
       {/* ── Alert Banners ── */}
@@ -803,7 +884,7 @@ export function LiveChargingScreen() {
       {isOverheating ? (
         <View style={[styles.bannerDanger, { marginTop: theme.spacing.sm }]}>
           <Ionicons name="warning" size={20} color={theme.colors.danger} />
-          <Text style={styles.bannerText}>Temperature Warning — {temperature.toFixed(1)}°C exceeds safe limit</Text>
+          <Text style={styles.bannerText}>Battery Overheated — {temperature.toFixed(1)}°C exceeds the {overheatLimit.toFixed(0)}°C limit</Text>
         </View>
       ) : null}
 
@@ -813,14 +894,24 @@ export function LiveChargingScreen() {
             <View style={{ marginTop: theme.spacing.md }}>
               <Text style={styles.primaryLabel}>Power</Text>
               <View style={{ marginTop: 6 }}>
-                <ValueWithUnit valueText={powerKW.toFixed(2)} unit="kW" />
+                <ValueWithUnit valueText={powerW.toFixed(1)} unit="W" />
               </View>
-              <Text style={styles.speedLabel}>Charging speed ≈ {powerKW.toFixed(2)} kW</Text>
+              <Text style={styles.speedLabel}>Charging speed ≈ {powerW.toFixed(1)} W</Text>
             </View>
 
             <View style={styles.metricsRow}>
-              <SecondaryMetric label="Voltage" valueText={voltage.toFixed(1)} unit="V" />
-              <SecondaryMetric label="Current" valueText={current.toFixed(2)} unit="A" />
+              <SecondaryMetric label="Voltage" valueText={data?.faultVoltage ? '––' : voltage.toFixed(1)} unit="V" warning={data?.faultVoltage} />
+              <SecondaryMetric label="Current" valueText={data?.faultCurrent ? '––' : current.toFixed(2)} unit="A" warning={data?.faultCurrent} />
+            </View>
+
+            <View style={styles.metricsRow}>
+              <SecondaryMetric label="Temperature" valueText={data?.faultTemp ? '––' : temperature.toFixed(1)} unit="°C" warning={data?.faultTemp} />
+              <SecondaryMetric label="Energy" valueText={energyWh.toFixed(1)} unit="Wh" />
+            </View>
+
+            <View style={styles.metricsRow}>
+              <SecondaryMetric label="Time" valueText={formatDuration(elapsedSeconds)} unit="" />
+              <SecondaryMetric label="Stop reason" valueText={uiStopReason === 'overdischarge' ? 'Low battery' : uiStopReason === 'soc_reached' ? 'Complete' : uiStopReason === 'overheat' ? 'Overheat' : 'Manual'} unit="" />
             </View>
           </Card>
       </View>
